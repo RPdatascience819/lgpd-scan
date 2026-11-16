@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * 1" # segunda-feira 06:00 de Brasília (09:00 UTC): varredura do histórico inteiro
 
 permissions:
   contents: read
@@ -30,7 +33,7 @@ jobs:
           SKIP: gitleaks
 
   gitleaks:
-    name: gitleaks (histórico completo)
+    name: gitleaks (segredos)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -44,3 +47,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_VERSION: 8.30.1 # igual à rev do hook no .pre-commit-config.yaml
