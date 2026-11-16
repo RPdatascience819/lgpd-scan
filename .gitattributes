@@ -1,0 +1,12 @@
+# Texto: sempre LF no repositório e na cópia de trabalho
+* text=auto eol=lf
+
+# Binários: nunca converter, nunca mostrar diff textual
+*.xlsx    binary
+*.xls     binary
+*.parquet binary
+*.db      binary
+*.sqlite  binary
+*.sqlite3 binary
+*.png     binary
+*.jpg     binary

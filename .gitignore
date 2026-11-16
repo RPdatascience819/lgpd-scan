@@ -1,0 +1,46 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Ambiente virtual (uv / venv) ---
+.venv/
+
+# --- Caches de ferramentas ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Segredos ---
+.env
+.env.*
+!.env.example
+
+# --- Dados: NUNCA versionar dados reais (projeto de LGPD) ---
+# Só dados sintéticos em examples/ podem entrar.
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.parquet
+*.db
+*.sqlite
+*.sqlite3
+!examples/**
+
+# --- Relatórios gerados pela ferramenta ---
+relatorio*.html
+*.report.json
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- Sistema operacional ---
+Thumbs.db
+desktop.ini
+.DS_Store
