@@ -18,7 +18,9 @@ e `docs/adr/`.
   O usuário faz o merge.
 - Versões: consultar a documentação oficial antes de fixar; fixar por tag ou lock.
 - Desvio do plano: avisar, propor, mudar só com ok, registrar em ADR (`docs/adr/`).
-- Escopo da fase atual: Fase 0 (fundação, sem código de aplicação).
+- Escopo da fase atual: Fase 1 (fatia vertical publicada). Referências:
+  [design](docs/design/2026-11-18-fase-1-design.md) e
+  [plano](docs/plans/2026-11-18-fase-1-plano.md).
   Pedido fora dela → lembrar e confirmar.
 
 ## Ambiente

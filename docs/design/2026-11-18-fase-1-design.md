@@ -91,9 +91,9 @@ lgpd-scan --version
   extra. CNPJ sozinho dá `0` porque é dado de empresa; senão, um CI travaria em qualquer
   planilha de fornecedores. "Suspeitas" (5.4) nunca disparam o `1`.
 - **Idioma:** as mensagens e a ajuda escritas pelo projeto (descrições de comandos e
-  opções, erros, resumo) ficam em português. Os textos embutidos do Click/Typer (`Usage:`,
-  `Show this message and exit.`) ficam em inglês. *Decisão do agente:* traduzi-los exigiria
-  sobrescrever o Click, um custo alto para pouco ganho.
+  opções, erros, resumo) ficam em português. Os textos embutidos do `argparse` (`usage:`,
+  `error:`, `show this help message and exit`) ficam como estão. *Decisão do agente:*
+  traduzi-los (via `gettext`) custa mais do que rende na v0.1.0.
 
 ### 5.2 Leitura de CSV
 
@@ -219,7 +219,7 @@ saem **mascaradas também no JSON**. Nenhuma saída contém valor completo.
 ## 6. Arquitetura
 
 ```text
-cli.py (Typer) ──► readers/csv_reader.py ──► detectors/{cpf,cnpj,email,telefone}.py
+cli.py (argparse) ──► readers/csv_reader.py ──► detectors/{cpf,cnpj,email,telefone}.py
                                               │
                           scoring.py ◄────────┘
                           ├──► report.py      (tabela Rich, JSON)
@@ -229,8 +229,8 @@ cli.py (Typer) ──► readers/csv_reader.py ──► detectors/{cpf,cnpj,ema
 Segue a tabela de `src/lgpd_scan/README.md`, que sai na Fase 1 em favor da docstring do
 `__init__.py`, como ele próprio anuncia.
 
-- **Dependências de execução:** Typer e Rich (o Typer já traz o Rich). Versões
-  conferidas na documentação no momento do plano. A escolha da CLI vai para o ADR-0003.
+- **Dependências de execução:** `argparse` (biblioteca padrão) e Rich (ADR-0003). Versões
+  conferidas na documentação no momento do plano. A escolha da CLI está no ADR-0003.
 - **Build backend:** item do DoR. A escolha (ex.: `uv_build` × `hatchling`) vai para ADR,
   com a prova `uv sync` + `uv run python -c "import lgpd_scan"` no caminho com acento.
 
