@@ -1,3 +1,4 @@
+import importlib
 import importlib.metadata
 import socket
 
@@ -16,6 +17,10 @@ def test_cli_version_imprime_e_sai_com_zero(capsys: pytest.CaptureFixture[str]) 
         main(["--version"])
     assert saida.value.code == 0
     assert capsys.readouterr().out.strip() == f"lgpd-scan {lgpd_scan.__version__}"
+
+
+def test_main_do_pacote_nao_executa_ao_importar() -> None:
+    importlib.import_module("lgpd_scan.__main__")
 
 
 def test_rede_esta_bloqueada_na_suite() -> None:

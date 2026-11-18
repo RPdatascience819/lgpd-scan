@@ -2,4 +2,5 @@
 
 from lgpd_scan.cli import executar
 
-executar()
+if __name__ == "__main__":
+    executar()

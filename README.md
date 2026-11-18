@@ -23,7 +23,7 @@ arquivo ──► readers/ ──► detectors/ ──► scoring.py ──┬�
                                                     └──► anonymize.py  (mask, hash, redact, drop)
 ```
 
-Cada módulo está descrito em [`src/lgpd_scan/README.md`](src/lgpd_scan/README.md).
+Cada módulo está descrito na docstring de [`src/lgpd_scan/__init__.py`](src/lgpd_scan/__init__.py).
 
 ## Pré-requisitos
 
