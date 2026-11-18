@@ -91,9 +91,9 @@ lgpd-scan --version
   extra. CNPJ sozinho dá `0` porque é dado de empresa; senão, um CI travaria em qualquer
   planilha de fornecedores. "Suspeitas" (5.4) nunca disparam o `1`.
 - **Idioma:** as mensagens e a ajuda escritas pelo projeto (descrições de comandos e
-  opções, erros, resumo) ficam em português. Os textos embutidos do Click/Typer (`Usage:`,
-  `Show this message and exit.`) ficam em inglês. *Decisão do agente:* traduzi-los exigiria
-  sobrescrever o Click, um custo alto para pouco ganho.
+  opções, erros, resumo) ficam em português. Os textos embutidos do `argparse` (`usage:`,
+  `error:`, `show this help message and exit`) ficam como estão. *Decisão do agente:*
+  traduzi-los (via `gettext`) custa mais do que rende na v0.1.0.
 
 ### 5.2 Leitura de CSV
 
