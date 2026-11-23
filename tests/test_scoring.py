@@ -25,6 +25,7 @@ from lgpd_scan.scoring import (
     analisar,
     classificar_celula,
     conta,
+    efetivo,
     tipo_sugerido,
 )
 
@@ -417,3 +418,108 @@ def test_analisar_le_o_arquivo_numa_unica_passagem(tmp_path: Path) -> None:
     leitor.linhas = contada  # type: ignore[method-assign]
     analisar(leitor, "x.csv")
     assert chamadas == 1
+
+
+# --------------------------------------------- ambíguos: formato e maioria da coluna
+
+
+def test_telefone_formatado_vence_cpf_sem_mascara_sem_contexto() -> None:
+    texto = "+55 " + _cpf_e_telefone()
+    achados = classificar_celula(texto, "obs")
+    assert [(a.ocorrencia.tipo, a.confianca, a.ambiguo, a.alternativa) for a in achados] == [
+        (Tipo.TELEFONE, Confianca.ALTA, False, None)
+    ]
+
+
+def test_telefone_formatado_em_parenteses_nao_se_sobrepoe_a_cpf() -> None:
+    # Não há como sobrepor: o CPF exige 11 dígitos seguidos ou a máscara 000.000.000-00.
+    rng = random.Random(1)
+    for _ in range(2000):
+        telefone = gerar_telefone(rng, celular=True, formatado=True)
+        assert not detectar_cpf(telefone)
+        assert [a.ocorrencia.tipo for a in classificar_celula(telefone, "obs")] == [Tipo.TELEFONE]
+
+
+def test_ambiguo_guarda_o_telefone_descartado_como_alternativa() -> None:
+    numero = _cpf_e_telefone()
+    (achado,) = classificar_celula(numero, "obs")
+    assert achado.ambiguo
+    assert achado.alternativa is not None
+    assert achado.alternativa.tipo is Tipo.TELEFONE
+    assert (achado.alternativa.inicio, achado.alternativa.fim) == (0, len(numero))
+    (firme,) = classificar_celula(numero, "telefone")
+    assert firme.alternativa is None
+
+
+def _mil_celulares(tmp_path: Path) -> LeitorCsv:
+    rng = random.Random(5)
+    celulas = [gerar_telefone(rng, celular=True, formatado=False) for _ in range(1000)]
+    return _csv(tmp_path, ["contato"], [[c] for c in celulas])
+
+
+def test_coluna_de_celulares_resolve_os_ambiguos_como_telefone(tmp_path: Path) -> None:
+    leitor = _mil_celulares(tmp_path)
+    # Pré-condição: alguns celulares também passam no DV do CPF e saem ambíguos.
+    ambiguos = [
+        a for linha in leitor.linhas() for a in classificar_celula(linha[0], "contato") if a.ambiguo
+    ]
+    assert len(ambiguos) > 0
+    analise = analisar(leitor, "x.csv")
+    assert [c.tipo for c in analise.colunas] == [Tipo.TELEFONE]  # nenhuma linha CPF
+    linha = analise.colunas[0]
+    assert (linha.contam, linha.suspeitas, linha.ambiguo) == (1000, 0, True)
+    assert linha.pct_preenchidas == pytest.approx(100.0)
+    assert analise.ambiguos_como_telefone == frozenset({0})
+    assert analise.risco is Risco.MEDIO
+    primeiro = ambiguos[0]
+    assert conta(primeiro, 0, analise)
+    efetiva = efetivo(primeiro, 0, analise)
+    assert efetiva.tipo is Tipo.TELEFONE
+    assert efetiva == primeiro.alternativa
+
+
+def test_efetivo_devolve_o_cpf_quando_a_coluna_nao_vira_telefone() -> None:
+    (achado,) = classificar_celula(_cpf_e_telefone(), "obs")
+    vazia = Analise("a.csv", 0, [], Risco.NENHUM, frozenset())
+    assert efetivo(achado, 0, vazia) == achado.ocorrencia
+    assert not conta(achado, 0, vazia)
+
+
+def test_obs_minoritaria_com_ambiguos_continua_cpf_suspeito(tmp_path: Path) -> None:
+    celulas = [_cpf_e_telefone() for _ in range(3)] + ["texto"] * 17
+    analise = analisar(_csv(tmp_path, ["obs"], [[c] for c in celulas]), "x.csv")
+    assert [c.tipo for c in analise.colunas] == [Tipo.CPF]
+    linha = analise.colunas[0]
+    assert (linha.contam, linha.suspeitas, linha.ambiguo) == (0, 3, True)
+    assert analise.ambiguos_como_telefone == frozenset()
+    assert analise.risco is Risco.NENHUM
+
+
+def test_coluna_so_de_ambiguos_fica_cpf_pela_maioria_de_cpf(tmp_path: Path) -> None:
+    celulas = [_cpf_e_telefone() for _ in range(10)]
+    analise = analisar(_csv(tmp_path, ["obs"], [[c] for c in celulas]), "x.csv")
+    assert [c.tipo for c in analise.colunas] == [Tipo.CPF]
+    assert analise.colunas[0].contam == 10
+    assert analise.ambiguos_como_telefone == frozenset()
+
+
+def test_codigo_pedido_continua_sem_telefone(tmp_path: Path) -> None:
+    celulas = [_cpf_sem_ddd() for _ in range(10)] + [_nao_cpf_sem_ddd() for _ in range(90)]
+    analise = analisar(_csv(tmp_path, ["codigo_pedido"], [[c] for c in celulas]), "x.csv")
+    assert [c.tipo for c in analise.colunas] == [Tipo.CPF]
+    assert analise.ambiguos_como_telefone == frozenset()
+
+
+def test_nenhum_valor_original_aparece_na_analise(tmp_path: Path) -> None:
+    valores = [
+        gerar_cpf(RNG, formatado=True),
+        gerar_cpf(RNG, formatado=False),
+        gerar_email(RNG),
+        gerar_telefone(RNG, celular=True, formatado=True),
+        gerar_cnpj(RNG, alfanumerico=True, formatado=True),
+        _cpf_e_telefone(),
+    ]
+    leitor = _csv(tmp_path, ["a", "b", "obs"], [valores[:3], valores[3:], valores[::2]])
+    texto = repr(analisar(leitor, "x.csv"))
+    for valor in valores:
+        assert valor not in texto

@@ -21,6 +21,11 @@ from lgpd_scan.mascara import mascarar
         ("+55 11 98765-4321", Tipo.TELEFONE, "+55 11 9****-4321"),
         ("(21) 3456-7890", Tipo.TELEFONE, "(21) 3***-7890"),
         ("a@exemplo.com", Tipo.EMAIL, "*@exemplo.com"),
+        ("+5511987654321", Tipo.TELEFONE, "+55119****4321"),
+        ("+55 (11) 98765-4321", Tipo.TELEFONE, "+55 (11) 9****-4321"),
+        ("2134567890", Tipo.TELEFONE, "213***7890"),
+        ("12345678000195", Tipo.CNPJ, "12******0001**"),
+        ("a.b@exemplo.com", Tipo.EMAIL, "a.*@exemplo.com"),
     ],
 )
 def test_exemplos_fixos(trecho: str, tipo: Tipo, esperado: str) -> None:
