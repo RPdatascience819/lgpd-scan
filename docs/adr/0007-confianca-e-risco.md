@@ -32,8 +32,12 @@ Decisões de implementação:
 2. **Coluna com mais de um tipo** (`cpf_cnpj`): `_tipos_sugeridos` devolve o conjunto;
    `tipo_sugerido` devolve o tipo só se for único. A classificação usa o conjunto.
 3. **Conflito CPF x telefone** é qualquer sobreposição de intervalos, não só identidade
-   (`+55 11987654321`). Só telefone no contexto: fica o telefone, ALTA. Só CPF: fica o CPF,
-   ALTA. Nenhum ou os dois: fica o CPF, MEDIA, `ambiguo=True`. A ocorrência descartada some.
+   (`+55 11987654321`). A resolução olha só a pertinência de CPF e de TELEFONE ao conjunto de
+   tipos da coluna; outros tipos (EMAIL, CNPJ) não interferem. TELEFONE no conjunto e CPF não
+   (`telefone`, `telefone_email`): fica o telefone, ALTA. CPF e não TELEFONE (`cpf`,
+   `cpf_email`): fica o CPF, ALTA. Os dois ou nenhum (`cpf_telefone`, `obs`): fica o CPF,
+   MEDIA. A ocorrência descartada some. `ambiguo=True` só neste último caso, o conflito
+   resolvido sem contexto.
 4. **Ocorrência contida num e-mail da mesma célula é descartada**: o e-mail já a cobre.
 5. **Maioria em aritmética inteira/racional:** o par `(coluna, tipo)` entra em `media_conta`
    quando `celulas_com_o_tipo / preenchidas >= 1/2` (comparação com `Fraction`, sem `float`).
