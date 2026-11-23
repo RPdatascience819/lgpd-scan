@@ -36,8 +36,10 @@ Decisões de implementação:
    tipos da coluna; outros tipos (EMAIL, CNPJ) não interferem. TELEFONE no conjunto e CPF não
    (`telefone`, `telefone_email`): fica o telefone, ALTA. CPF e não TELEFONE (`cpf`,
    `cpf_email`): fica o CPF, ALTA. Os dois ou nenhum (`cpf_telefone`, `obs`): fica o CPF,
-   MEDIA. A ocorrência descartada some. `ambiguo=True` só neste último caso, o conflito
-   resolvido sem contexto.
+   MEDIA. A ocorrência descartada some. Neste último caso, o conflito resolvido sem
+   contexto, o `Achado` nasce com `ambiguo=True`. A linha do relatório também fica com
+   `ambiguo=True`: na linha CPF, quando os ambíguos continuam CPF; na linha TELEFONE,
+   quando a coluna foi resolvida como telefone pela maioria (regra abaixo).
    **Telefone formatado vence no conflito sem contexto.** Com os dois tipos ou nenhum no
    conjunto, se o telefone é formatado (`+55 11987654321`) e o CPF não, fica o telefone, com a
    confiança normal e sem `ambiguo`. Um telefone com máscara não deve perder para um CPF sem
@@ -48,7 +50,7 @@ Decisões de implementação:
    coluna viram TELEFONE: saem da linha CPF, entram em `contam` da linha TELEFONE (com
    `ambiguo=True`) e a coluna entra em `Analise.ambiguos_como_telefone`. Senão, ficam CPF.
    `conta()` aceita esses achados e `efetivo()` devolve a ocorrência certa (tipo e span) para
-   a Task 11 mascarar. Motivo e medição: numa coluna `contato` com 1.000 celulares sem
+   o comando `anonymize` mascarar. Motivo e medição: numa coluna `contato` com 1.000 celulares sem
    máscara, 6 também passam no DV do CPF; sem esta regra viravam CPF suspeito e o
    `anonymize` não os mascarava, vazando telefones reais.
 4. **Ocorrência contida num e-mail da mesma célula é descartada**: o e-mail já a cobre.
@@ -78,7 +80,9 @@ Decisões de implementação:
 - **Negativas / custos aceitos:** um CPF solto, sem máscara e sem contexto, numa coluna de
   outra coisa não altera o risco (aparece como suspeita). Nomes de coluna fora da tabela
   (`contato`) não dão contexto. Um telefone colado a um e-mail gera trechos sobrepostos
-  (`11 98765-4321@exemplo.com` dá telefone [0,13) e e-mail [3,25)); a Task 11 precisa juntar
-  os intervalos antes de mascarar.
+  (`11 98765-4321@exemplo.com` dá telefone [0,13) e e-mail [3,25)); o comando `anonymize`
+  precisa juntar os intervalos antes de mascarar. Numa coluna sem maioria de telefone, os
+  ambíguos continuam suspeitas de CPF, e o `anonymize` só os mascara com
+  `--incluir-suspeitas`.
 - **O que revisitar e quando:** o limiar de 0.5 e a tabela de palavras, se a validação com
   arquivos sintéticos maiores mostrar falsos negativos ou positivos.
