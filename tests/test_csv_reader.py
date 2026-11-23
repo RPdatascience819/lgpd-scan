@@ -1,6 +1,7 @@
 """Testes do leitor de CSV. Todo arquivo nasce em `tmp_path`, gravado em bytes."""
 
 import csv
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -173,3 +174,72 @@ def test_mensagens_nunca_contem_texto_de_celula(tmp_path: Path) -> None:
     with pytest.raises(ErroLeitura) as info:
         LeitorCsv(caminho)
     assert "CELULASECRETA" not in str(info.value)
+
+
+def test_excel_crlf_com_aspas_cai_no_recuo_do_cabecalho(tmp_path: Path) -> None:
+    texto = (
+        'nome;cpf;obs\r\nJoão Ávila;123;"tem; ponto e vírgula"\r\n'
+        'Maria D\'Ávila;;"linha\r\nquebrada"\r\n'
+    )
+    leitor = LeitorCsv(_grava(tmp_path, texto.encode("cp1252")))
+    assert leitor.formato == FormatoCsv("cp1252", ";")
+    assert leitor.cabecalho == ["nome", "cpf", "obs"]
+    assert _todas(leitor) == [
+        ["João Ávila", "123", "tem; ponto e vírgula"],
+        ["Maria D'Ávila", "", "linha\r\nquebrada"],
+    ]
+
+
+def test_cabecalho_sem_candidato_devolve_virgula(tmp_path: Path) -> None:
+    # Sniffer falha (CRLF + aspas); o cabeçalho não tem nenhum delimitador candidato.
+    leitor = LeitorCsv(_grava(tmp_path, b'nome\r\n"a;b"\r\n"c\r\nd"\r\n'))
+    assert leitor.formato.delimitador == ","
+
+
+def test_sniffer_que_acerta_continua_igual(tmp_path: Path) -> None:
+    leitor = LeitorCsv(_grava(tmp_path, b"a|b|c\n1|2|3\n4|5|6\n"))
+    assert leitor.formato.delimitador == "|"
+
+
+def test_utf16_pela_marca_de_ordem_de_bytes(tmp_path: Path) -> None:
+    leitor = LeitorCsv(_grava(tmp_path, "nome\tcpf\r\nJoão\t1\r\n".encode("utf-16")))
+    assert leitor.formato == FormatoCsv("utf-16", "\t")
+    assert leitor.cabecalho == ["nome", "cpf"]
+    assert _todas(leitor) == [["João", "1"]]
+
+
+@pytest.mark.parametrize("delimitador", ['"', "\n", "\r"])
+def test_delimitador_recusado_pelo_csv_vira_erro_leitura(tmp_path: Path, delimitador: str) -> None:
+    with pytest.raises(ErroLeitura, match="delimitador") as info:
+        LeitorCsv(_grava(tmp_path, b"a\n"), delimitador=delimitador)
+    assert info.value.__cause__ is None
+
+
+def test_espaco_continua_aceito_como_delimitador(tmp_path: Path) -> None:
+    leitor = LeitorCsv(_grava(tmp_path, b"a b\n1 2\n"), delimitador=" ")
+    assert leitor.cabecalho == ["a", "b"]
+
+
+def test_erro_de_codificacao_em_arquivo_grande_usa_pouca_memoria(tmp_path: Path) -> None:
+    linha = b"abcdefghij,0123456789,Ana Bia\n"  # 30 bytes
+    n = 700_000  # ~21 MB
+    caminho = _grava(tmp_path, linha * (n - 1) + b"x,\x81\n")
+    tracemalloc.start()
+    try:
+        with pytest.raises(ErroLeitura) as info:
+            LeitorCsv(caminho)
+        pico = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert f"linha {n}" in str(info.value)
+    assert pico < 8 * 1024 * 1024
+
+
+def test_numero_da_linha_com_multibyte_atravessando_blocos(tmp_path: Path) -> None:
+    # Linhas com "ã" (2 bytes em UTF-8) cruzam a fronteira de bloco em posições variadas.
+    linha = "ãb,ç\n".encode()
+    n = (3 * (1 << 20)) // len(linha) + 7
+    caminho = _grava(tmp_path, linha * n + b"\xff\n")
+    with pytest.raises(ErroLeitura) as info:
+        LeitorCsv(caminho, encoding="utf-8")
+    assert f"linha {n + 1}" in str(info.value)
