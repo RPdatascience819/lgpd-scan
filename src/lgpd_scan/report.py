@@ -4,6 +4,7 @@ Nada aqui vê o valor original de uma célula: a `amostra` de `LinhaRelatorio` j
 mascarada em `scoring`, e este módulo só a repassa.
 """
 
+import io
 import json
 from typing import TextIO
 
@@ -12,7 +13,9 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from lgpd_scan.detectors.base import Tipo
+from lgpd_scan.detectors import DETECTORES
+from lgpd_scan.detectors.base import Ocorrencia, Tipo
+from lgpd_scan.mascara import mascarar
 from lgpd_scan.scoring import Analise, Confianca, LinhaRelatorio
 
 SCHEMA_VERSION = 1
@@ -42,13 +45,66 @@ _NOME_CONFIANCA = {Confianca.ALTA: "alta", Confianca.MEDIA: "média"}
 
 
 def criar_console(destino: TextIO) -> Console:
-    """Console para `destino`; fora de um terminal, largo o bastante para não dobrar a amostra."""
+    """Console para o stdout; fora de um terminal, largo o bastante para não dobrar a amostra."""
     console = Console(file=destino, highlight=False)
     if console.is_terminal:
         return console
     return Console(
         file=destino, highlight=False, force_terminal=False, width=LARGURA_FORA_DO_TERMINAL
     )
+
+
+def criar_console_de_arquivo(destino: TextIO) -> Console:
+    """Console para `--output`: nunca consulta o terminal nem o ambiente.
+
+    `FORCE_COLOR` e `COLUMNS` não valem aqui: o arquivo é sempre sem cor e com largura fixa.
+    """
+    return Console(
+        file=destino,
+        highlight=False,
+        force_terminal=False,
+        no_color=True,
+        width=LARGURA_FORA_DO_TERMINAL,
+    )
+
+
+def tabela_como_texto(analise: Analise) -> str:
+    """A tabela inteira numa string, no formato de `--output`."""
+    buffer = io.StringIO()
+    renderizar_tabela(analise, criar_console_de_arquivo(buffer))
+    return buffer.getvalue()
+
+
+def _agrupar(ocorrencias: list[Ocorrencia]) -> list[list[Ocorrencia]]:
+    """Junta as ocorrências que se sobrepõem, em ordem de posição."""
+    grupos: list[list[Ocorrencia]] = []
+    fim = -1
+    for o in sorted(ocorrencias, key=lambda o: (o.inicio, o.fim)):
+        if grupos and o.inicio < fim:
+            grupos[-1].append(o)
+            fim = max(fim, o.fim)
+        else:
+            grupos.append([o])
+            fim = o.fim
+    return grupos
+
+
+def nome_de_coluna_seguro(nome: str) -> str:
+    """O nome da coluna com todo dado pessoal detectado mascarado.
+
+    Um CSV sem cabeçalho faz a primeira linha de dados virar "cabeçalho"; sem isto, o relatório
+    imprimiria um CPF ou e-mail inteiro no campo `coluna`.
+    """
+    grupos = _agrupar([o for detectar in DETECTORES for o in detectar(nome)])
+    for grupo in reversed(grupos):  # da direita para a esquerda: os índices não se deslocam
+        inicio = min(o.inicio for o in grupo)
+        fim = max(o.fim for o in grupo)
+        maior = max(grupo, key=lambda o: o.fim - o.inicio)
+        antes = "".join("*" if c.isalnum() else c for c in nome[inicio : maior.inicio])
+        meio = mascarar(nome[maior.inicio : maior.fim], maior.tipo)
+        depois = "".join("*" if c.isalnum() else c for c in nome[maior.fim : fim])
+        nome = nome[:inicio] + antes + meio + depois + nome[fim:]
+    return nome
 
 
 def _milhar(n: int) -> str:
@@ -68,7 +124,7 @@ def renderizar_json(analise: Analise) -> str:
         "risco": analise.risco.value,
         "colunas": [
             {
-                "coluna": c.coluna,
+                "coluna": nome_de_coluna_seguro(c.coluna),
                 "indice_coluna": c.indice_coluna,
                 "tipo": c.tipo.value,
                 "contam": c.contam,
@@ -120,7 +176,7 @@ def renderizar_tabela(analise: Analise, console: Console) -> None:
         if _so_suspeita(linha):
             amostra = f"{amostra}  {MARCA_SUSPEITA}"
         tabela.add_row(
-            Text(linha.coluna),
+            Text(nome_de_coluna_seguro(linha.coluna)),
             Text(_NOME_TIPO[linha.tipo]),
             Text(_milhar(linha.contam)),
             Text(_milhar(linha.suspeitas)),

@@ -101,6 +101,7 @@ def test_diretorio_no_lugar_do_arquivo_da_2(
     assert main(["scan", str(tmp_path)]) == 2
     captura = capsys.readouterr()
     assert captura.err.startswith("lgpd-scan: erro: ")
+    assert "não é um arquivo" in captura.err
     assert "Traceback" not in captura.err
 
 
@@ -142,7 +143,9 @@ def test_output_sobrescreve_arquivo_existente(tmp_path: Path) -> None:
     destino = tmp_path / "r.txt"
     destino.write_text("velho", encoding="utf-8")
     main(["scan", str(_so_cnpj(tmp_path)), "--output", str(destino)])
-    assert "velho" not in destino.read_text(encoding="utf-8")
+    novo = destino.read_text(encoding="utf-8")
+    assert "velho" not in novo
+    assert novo.startswith("LGPD-Scan · cnpj.csv · 5 linhas · risco BAIXO")
 
 
 def test_tabela_com_output_grava_a_amostra_inteira_sem_reticencias(
@@ -188,6 +191,7 @@ def test_output_em_pasta_inexistente_da_2(
     assert main(["scan", str(_so_cnpj(tmp_path)), "--output", str(destino)]) == 2
     err = capsys.readouterr().err
     assert err.startswith("lgpd-scan: erro: ")
+    assert "não foi possível gravar o relatório" in err
     assert "Traceback" not in err
 
 
@@ -204,7 +208,10 @@ def test_colunas_com_o_mesmo_nome_aparecem_separadas_no_json(
 
 
 def _rodar(arquivo: Path) -> subprocess.CompletedProcess[str]:
-    ambiente = {**os.environ, "PYTHONIOENCODING": "cp1252"}
+    ambiente = {
+        k: v for k, v in os.environ.items() if k not in ("FORCE_COLOR", "NO_COLOR", "COLUMNS")
+    }
+    ambiente["PYTHONIOENCODING"] = "cp1252"
     return subprocess.run(
         [sys.executable, "-m", "lgpd_scan", "scan", str(arquivo)],
         capture_output=True,

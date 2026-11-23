@@ -87,6 +87,22 @@ def test_arquivo_de_output_nao_traz_valor_original(
     _sem_vazamento(captura.err, proibidas)
 
 
+@pytest.mark.parametrize("formato", ["table", "json"])
+def test_csv_sem_cabecalho_nao_vaza_a_primeira_linha_como_nome_de_coluna(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], formato: str
+) -> None:
+    rng = random.Random(78)
+    cpf, email = gerar_cpf(rng, formatado=True), gerar_email(rng)
+    linhas = [f"{gerar_cpf(rng, formatado=True)},{gerar_email(rng)}" for _ in range(3)]
+    arquivo = tmp_path / "sem_cabecalho.csv"
+    arquivo.write_text("\n".join([f"{cpf},{email}", *linhas]) + "\n", encoding="utf-8")
+    assert main(["scan", str(arquivo), "--format", formato]) == 1
+    captura = capsys.readouterr()
+    assert captura.out
+    _sem_vazamento(captura.out, _formas_proibidas([cpf, email]))
+    _sem_vazamento(captura.err, _formas_proibidas([cpf, email]))
+
+
 def test_o_detector_de_vazamento_acusa_um_vazamento_real() -> None:
     with pytest.raises(AssertionError, match="apareceram"):
         _sem_vazamento("cpf 111.444.777-35 no texto", {"111.444.777-35"})

@@ -6,6 +6,7 @@ português, e nunca trazem o conteúdo de uma célula.
 """
 
 import argparse
+import contextlib
 import os
 import sys
 from collections.abc import Sequence
@@ -14,8 +15,14 @@ from typing import NoReturn
 
 from lgpd_scan import __version__
 from lgpd_scan.readers import ErroLeitura, LeitorCsv
-from lgpd_scan.report import criar_console, renderizar_json, renderizar_tabela
-from lgpd_scan.scoring import Risco, analisar
+from lgpd_scan.report import (
+    criar_console,
+    nome_de_coluna_seguro,
+    renderizar_json,
+    renderizar_tabela,
+    tabela_como_texto,
+)
+from lgpd_scan.scoring import Analise, Risco, analisar
 
 SAIDA_OK = 0
 SAIDA_RISCO = 1
@@ -70,26 +77,75 @@ def _e_o_mesmo_arquivo(a: Path, b: Path) -> bool:
     if a.resolve() == b.resolve():
         return True
     try:
-        # `samefile` exige que os dois existam; cobre links e diferenças de maiúsculas.
+        # `samefile` exige que os dois existam; cobre hardlinks e diferenças de maiúsculas.
         return os.path.samefile(a, b)
     except OSError:
         return False
 
 
-def _gravar(texto: str, destino: Path) -> None:
-    with open(destino, "w", encoding="utf-8", newline="") as f:
-        f.write(texto)
+def _gravar_atomico(texto: str, destino: Path) -> None:
+    """Grava num temporário ao lado e troca: uma falha nunca deixa o relatório pela metade."""
+    temporario = destino.with_name(destino.name + ".tmp")
+    try:
+        with open(temporario, "w", encoding="utf-8", newline="") as f:
+            f.write(texto)
+        os.replace(temporario, destino)
+    except BaseException:
+        temporario.unlink(missing_ok=True)
+        raise
+
+
+def _desviar_stdout_para_o_nulo() -> None:
+    """Depois de um pipe quebrado, manda o fd 1 para o nulo: nem a saída do interpretador
+    ao encerrar pode trocar o código de saída."""
+    with contextlib.suppress(OSError, ValueError, AttributeError):
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+
+
+def _escrever_no_stdout(analise: Analise, formato: str) -> None:
+    try:
+        if formato == "json":
+            sys.stdout.write(renderizar_json(analise) + "\n")
+        else:
+            renderizar_tabela(analise, criar_console(sys.stdout))
+        sys.stdout.flush()
+    except (BrokenPipeError, SystemExit):  # `lgpd-scan scan x.csv | head`
+        # O Rich trata o pipe quebrado sozinho: redireciona o fd 1 e encerra com SystemExit(1),
+        # que se confundiria com "risco médio ou alto". Aqui o código de risco já está decidido.
+        _desviar_stdout_para_o_nulo()
+
+
+def _aviso_de_cabecalho(cabecalho: list[str]) -> None:
+    if any(nome_de_coluna_seguro(nome) != nome for nome in cabecalho):
+        print(
+            "lgpd-scan: aviso: a primeira linha parece conter dados pessoais; o CSV pode não "
+            "ter cabeçalho. CSV sem cabeçalho não é suportado nesta versão.",
+            file=sys.stderr,
+        )
+
+
+def _verificar_caminhos(arquivo: Path, saida: Path | None) -> str | None:
+    """A mensagem de erro de entrada e saída, ou `None` se estão em ordem."""
+    try:
+        if saida is not None and _e_o_mesmo_arquivo(arquivo, saida):
+            return "--output não pode ser o arquivo de entrada"
+        if not arquivo.exists():
+            return f"arquivo não encontrado: {arquivo}"
+        if not arquivo.is_file():
+            return f"não é um arquivo: {arquivo}"
+    except (OSError, RuntimeError) as erro:
+        # PermissionError na travessia (Python 3.11 a 3.13) e laço de symlink (RuntimeError).
+        detalhe = getattr(erro, "strerror", None) or type(erro).__name__
+        return f"não foi possível acessar o caminho: {detalhe}"
+    return None
 
 
 def _comando_scan(args: argparse.Namespace) -> int:
     arquivo: Path = args.arquivo
     saida: Path | None = args.output
-    if saida is not None and _e_o_mesmo_arquivo(arquivo, saida):
-        return _erro("--output não pode ser o arquivo de entrada")
-    if not arquivo.exists():
-        return _erro(f"arquivo não encontrado: {arquivo}")
-    if not arquivo.is_file():
-        return _erro(f"não é um arquivo: {arquivo}")
+    problema = _verificar_caminhos(arquivo, saida)
+    if problema is not None:
+        return _erro(problema)
     try:
         leitor = LeitorCsv(arquivo, encoding=args.encoding, delimitador=args.delimiter)
         analise = analisar(leitor, arquivo.name)
@@ -98,21 +154,20 @@ def _comando_scan(args: argparse.Namespace) -> int:
     except OSError as erro:
         return _erro(f"não foi possível ler o arquivo: {erro.strerror or type(erro).__name__}")
 
-    try:
-        if args.format == "json":
-            texto = renderizar_json(analise) + "\n"
-            if saida is None:
-                sys.stdout.write(texto)
+    _aviso_de_cabecalho(leitor.cabecalho)
+    if saida is None:
+        _escrever_no_stdout(analise, args.format)
+    else:
+        try:
+            if args.format == "json":
+                texto = renderizar_json(analise) + "\n"
             else:
-                _gravar(texto, saida)
-        elif saida is None:
-            renderizar_tabela(analise, criar_console(sys.stdout))
-        else:
-            with open(saida, "w", encoding="utf-8", newline="") as f:
-                renderizar_tabela(analise, criar_console(f))
-    except OSError as erro:
-        return _erro(f"não foi possível gravar o relatório: {erro.strerror or type(erro).__name__}")
-    if saida is not None:
+                texto = tabela_como_texto(analise)
+            _gravar_atomico(texto, saida)
+        except OSError as erro:
+            return _erro(
+                f"não foi possível gravar o relatório: {erro.strerror or type(erro).__name__}"
+            )
         print(f"Relatório gravado em {saida}", file=sys.stderr)
     return SAIDA_RISCO if analise.risco in (Risco.MEDIO, Risco.ALTO) else SAIDA_OK
 
@@ -142,4 +197,9 @@ def _tolerar_caracteres_invalidos() -> None:
 def executar() -> NoReturn:
     """Ponto de entrada do console script `lgpd-scan`."""
     _tolerar_caracteres_invalidos()
-    sys.exit(main())
+    try:
+        codigo = main()
+    except KeyboardInterrupt:
+        print("lgpd-scan: interrompido", file=sys.stderr)
+        codigo = 130
+    sys.exit(codigo)
