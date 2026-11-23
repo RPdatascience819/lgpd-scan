@@ -2,12 +2,14 @@
 
 import random
 import time
+import unicodedata
 
 import pytest
 
 from lgpd_scan._sinteticos import gerar_email
 from lgpd_scan.detectors.base import Tipo
 from lgpd_scan.detectors.email import detectar_email
+from lgpd_scan.mascara import mascarar
 
 
 def _fatias(texto: str) -> list[str]:
@@ -86,6 +88,59 @@ def test_todo_email_sintetico_e_achado_com_a_fatia_exata() -> None:
     ["a" * 200_000, "a" * 200_000 + "@", "a@" + "b." * 50_000, "a@" + "b" * 200_000],
 )
 def test_tempo_linear_em_celulas_grandes(texto: str) -> None:
+    inicio = time.perf_counter()
+    assert detectar_email(texto) == []
+    assert time.perf_counter() - inicio < 1.0
+
+
+def _nfd(texto: str) -> str:
+    return unicodedata.normalize("NFD", texto)
+
+
+def _sem_marcas(texto: str) -> str:
+    return "".join(c for c in texto if not unicodedata.combining(c))
+
+
+@pytest.mark.parametrize(
+    ("nfc", "prefixo", "esperado_nfc"),
+    [
+        ("joão@exemplo.com", "", "joão@exemplo.com"),
+        ("conceição.ávila@exemplo.com.br", "", "conceição.ávila@exemplo.com.br"),
+        ("ana@exemplão.com", "", "ana@exemplão.com"),
+        ("joão@exemplo.com", "escreva para ", "joão@exemplo.com"),
+    ],
+)
+def test_nfd_casa_o_endereco_inteiro(nfc: str, prefixo: str, esperado_nfc: str) -> None:
+    texto = _nfd(prefixo + nfc + ("." if prefixo else ""))
+    fatias = _fatias(texto)
+    assert fatias == [_nfd(esperado_nfc)]
+    assert unicodedata.normalize("NFC", fatias[0]) == esperado_nfc
+
+
+def test_nfc_continua_casando_inteiro() -> None:
+    assert _fatias("joão@exemplo.com") == ["joão@exemplo.com"]
+
+
+def test_tld_acentuado_em_nfd_nao_gera_ocorrencia_parcial() -> None:
+    assert detectar_email(_nfd("ana@exemplo.côm")) == []
+
+
+def test_marca_solta_colada_ao_email_entra_na_fatia() -> None:
+    texto = "\N{COMBINING ACUTE ACCENT}ana@exemplo.com"
+    assert _fatias(texto) == [texto]
+
+
+def test_mascarar_email_nfd_nao_deixa_letra_da_parte_local() -> None:
+    texto = _nfd("escreva para joão@exemplo.com hoje")
+    [o] = detectar_email(texto)
+    mascarado = mascarar(texto[o.inicio : o.fim], Tipo.EMAIL)
+    local = _sem_marcas(mascarado.partition("@")[0])
+    assert local == "j" + "*" * 3
+    assert mascarado.endswith("@exemplo.com")
+
+
+def test_tempo_linear_com_marcas_combinantes() -> None:
+    texto = "a\u0301" * 100_000 + "@"
     inicio = time.perf_counter()
     assert detectar_email(texto) == []
     assert time.perf_counter() - inicio < 1.0
