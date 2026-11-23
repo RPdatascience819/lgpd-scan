@@ -37,7 +37,8 @@ def _linha_do_erro(caminho: Path, encoding: str) -> int | None:
     inválido, ou `None` se o arquivo inteiro decodifica."""
     # O decodificador incremental do utf-8-sig consome o BOM e desloca `erro.start` em 3 bytes.
     # Para achar a linha o BOM é irrelevante (não contém "\n"), e "utf-8" aceita os mesmos bytes.
-    encoding = "utf-8" if encoding == "utf-8-sig" else encoding
+    # Compara o nome normalizado: "UTF-8-SIG" e "utf_8_sig" são apelidos do mesmo codec.
+    encoding = "utf-8" if codecs.lookup(encoding).name == "utf-8-sig" else encoding
     decodificador = codecs.getincrementaldecoder(encoding)()
     linhas_antes = 0
     with open(caminho, "rb") as f:
@@ -122,20 +123,25 @@ class LeitorCsv:
 
     def _linhas_brutas(self) -> Iterator[list[str]]:
         """Linhas não vazias, como o `csv.reader` as entrega, sem alterar o conteúdo."""
-        csv.field_size_limit(_LIMITE_CAMPO)
-        with open(self._caminho, encoding=self.formato.encoding, newline="") as f:
-            leitor = csv.reader(f, delimiter=self.formato.delimitador)
-            try:
-                for linha in leitor:
-                    if linha:
-                        yield linha
-            except csv.Error as erro:
-                if "field larger than field limit" in str(erro):
-                    raise ErroLeitura(
-                        f"campo maior que {_LIMITE_CAMPO} caracteres na linha "
-                        f"{leitor.line_num}; procure uma aspa sem fechamento antes dela"
-                    ) from None
-                raise ErroLeitura(f"CSV malformado na linha {leitor.line_num}") from None
+        # O módulo csv só tem limite global ao processo (não por leitor): eleva-se durante a
+        # leitura e restaura-se no `finally`, que roda ao fim da iteração, no close() e na coleta.
+        antigo = csv.field_size_limit(_LIMITE_CAMPO)
+        try:
+            with open(self._caminho, encoding=self.formato.encoding, newline="") as f:
+                leitor = csv.reader(f, delimiter=self.formato.delimitador)
+                try:
+                    for linha in leitor:
+                        if linha:
+                            yield linha
+                except csv.Error as erro:
+                    if "field larger than field limit" in str(erro):
+                        raise ErroLeitura(
+                            f"campo maior que {_LIMITE_CAMPO} caracteres na linha "
+                            f"{leitor.line_num}; pode ser uma aspa sem fechamento antes dela"
+                        ) from None
+                    raise ErroLeitura(f"CSV malformado na linha {leitor.line_num}") from None
+        finally:
+            csv.field_size_limit(antigo)
 
     def _mede_cabecalho(self) -> list[str]:
         cabecalho: list[str] | None = None

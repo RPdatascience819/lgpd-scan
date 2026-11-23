@@ -1,11 +1,24 @@
 """Testes do leitor de CSV. Todo arquivo nasce em `tmp_path`, gravado em bytes."""
 
+import csv
+import gc
 import tracemalloc
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from lgpd_scan.readers import ErroLeitura, FormatoCsv, LeitorCsv, csv_reader
+
+
+@pytest.fixture(autouse=True)
+def _limite_global_intacto() -> Iterator[None]:
+    """Nenhum teste deste arquivo pode deixar o limite de campo do `csv` alterado."""
+    antes = csv.field_size_limit()
+    yield
+    depois = csv.field_size_limit()
+    csv.field_size_limit(antes)  # restaura antes de afirmar, para não contaminar outros testes
+    assert depois == antes
 
 
 def _grava(tmp_path: Path, conteudo: bytes, nome: str = "dados.csv") -> Path:
@@ -164,7 +177,7 @@ def test_aspa_sem_fechamento_estoura_o_limite_com_sugestao(
     with pytest.raises(ErroLeitura) as info:
         LeitorCsv(caminho)
     mensagem = str(info.value)
-    assert "aspa sem fechamento" in mensagem
+    assert "pode ser uma aspa sem fechamento" in mensagem
     assert "campo maior" in mensagem
     assert "MARCADOR" not in mensagem
     assert "ABERTA" not in mensagem
@@ -176,6 +189,8 @@ def test_aspa_sem_fechamento_estoura_o_limite_com_sugestao(
     [
         (b"\xef\xbb\xbfa\nb\nc\xff", "utf-8-sig", 3),
         (b"\xef\xbb\xbfa\n\xff", "utf-8-sig", 2),
+        (b"\xef\xbb\xbfa\n\xff", "UTF-8-SIG", 2),
+        (b"\xef\xbb\xbfa\n\xff", "utf_8_sig", 2),
         (b"\xef\xbb\xbf" + b"x,y\n" * 400_000 + b"\xff\n", "utf-8-sig", 400_001),
         (b"a\nb\nc\xff", "utf-8", 3),
         (b"a\n\xff", "utf-8", 2),
@@ -191,7 +206,7 @@ def test_numero_exato_da_linha_do_erro(
     assert f"linha {linha} " in str(info.value)
 
 
-@pytest.mark.parametrize("codec", ["hex", "zlib"])
+@pytest.mark.parametrize("codec", ["hex", "zlib", "rot13", "base64"])
 def test_codec_que_nao_e_de_texto_vira_erro_leitura(tmp_path: Path, codec: str) -> None:
     with pytest.raises(ErroLeitura, match="não suportada") as info:
         LeitorCsv(_grava(tmp_path, b"a,b\n"), encoding=codec)
@@ -200,9 +215,32 @@ def test_codec_que_nao_e_de_texto_vira_erro_leitura(tmp_path: Path, codec: str) 
 
 def test_linha_vazia_antes_do_cabecalho_no_recuo_do_delimitador(tmp_path: Path) -> None:
     texto = '\r\nnome;cpf;obs\r\nJoão Ávila;123;"tem; ponto"\r\nMaria;;"linha\r\nquebrada"\r\n'
+    # Premissa: o Sniffer falha neste arquivo, senão o teste não exercita o recuo.
+    with pytest.raises(csv.Error):
+        csv.Sniffer().sniff(texto, delimiters=",;\t|")
     leitor = LeitorCsv(_grava(tmp_path, texto.encode("cp1252")))
     assert leitor.formato == FormatoCsv("cp1252", ";")
     assert leitor.cabecalho == ["nome", "cpf", "obs"]
+
+
+def test_limite_de_campo_global_volta_ao_valor_anterior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    antes = csv.field_size_limit()
+    leitor = LeitorCsv(_grava(tmp_path, b"a,b\n1,2\n3,4\n"))
+    assert _todas(leitor) == [["1", "2"], ["3", "4"]]
+    assert csv.field_size_limit() == antes
+    # Também quando a leitura termina em erro, com o limite do módulo reduzido.
+    monkeypatch.setattr(csv_reader, "_LIMITE_CAMPO", 10)
+    with pytest.raises(ErroLeitura):
+        LeitorCsv(_grava(tmp_path, b"a,b\n" + b"y" * 50 + b",3\n", "grande.csv"))
+    assert csv.field_size_limit() == antes
+    # Gerador abandonado no meio: a coleta também restaura.
+    gerador = leitor.linhas()
+    next(gerador)
+    del gerador  # a coleta fecha o gerador e roda o `finally`
+    gc.collect()
+    assert csv.field_size_limit() == antes
 
 
 def test_linhas_totalmente_vazias_sao_puladas(tmp_path: Path) -> None:
