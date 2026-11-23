@@ -213,11 +213,20 @@ def test_codec_que_nao_e_de_texto_vira_erro_leitura(tmp_path: Path, codec: str) 
     assert info.value.__cause__ is None
 
 
-def test_linha_vazia_antes_do_cabecalho_no_recuo_do_delimitador(tmp_path: Path) -> None:
+def _sniffer_falha(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Força o recuo do delimitador: se o Sniffer levanta erro depende da versão do Python."""
+
+    def _levanta(*_args: object, **_kwargs: object) -> None:
+        raise csv.Error("Could not determine delimiter")
+
+    monkeypatch.setattr(csv.Sniffer, "sniff", _levanta)
+
+
+def test_linha_vazia_antes_do_cabecalho_no_recuo_do_delimitador(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     texto = '\r\nnome;cpf;obs\r\nJoão Ávila;123;"tem; ponto"\r\nMaria;;"linha\r\nquebrada"\r\n'
-    # Premissa: o Sniffer falha neste arquivo, senão o teste não exercita o recuo.
-    with pytest.raises(csv.Error):
-        csv.Sniffer().sniff(texto, delimiters=",;\t|")
+    _sniffer_falha(monkeypatch)
     leitor = LeitorCsv(_grava(tmp_path, texto.encode("cp1252")))
     assert leitor.formato == FormatoCsv("cp1252", ";")
     assert leitor.cabecalho == ["nome", "cpf", "obs"]
@@ -260,12 +269,13 @@ def test_mensagens_nunca_contem_texto_de_celula(tmp_path: Path) -> None:
     assert "CELULASECRETA" not in str(info.value)
 
 
-def test_excel_crlf_com_aspas_cai_no_recuo_do_cabecalho(tmp_path: Path) -> None:
-    texto = (
-        'nome;cpf;obs\r\nJoão Ávila;123;"tem; ponto e vírgula"\r\n'
-        'Maria D\'Ávila;;"linha\r\nquebrada"\r\n'
-    )
-    leitor = LeitorCsv(_grava(tmp_path, texto.encode("cp1252")))
+_EXCEL = (
+    'nome;cpf;obs\r\nJoão Ávila;123;"tem; ponto e vírgula"\r\n'
+    'Maria D\'Ávila;;"linha\r\nquebrada"\r\n'
+)
+
+
+def _confere_excel(leitor: LeitorCsv) -> None:
     assert leitor.formato == FormatoCsv("cp1252", ";")
     assert leitor.cabecalho == ["nome", "cpf", "obs"]
     assert _todas(leitor) == [
@@ -274,8 +284,23 @@ def test_excel_crlf_com_aspas_cai_no_recuo_do_cabecalho(tmp_path: Path) -> None:
     ]
 
 
-def test_cabecalho_sem_candidato_devolve_virgula(tmp_path: Path) -> None:
-    # Sniffer falha (CRLF + aspas); o cabeçalho não tem nenhum delimitador candidato.
+def test_excel_crlf_com_aspas_cai_no_recuo_do_cabecalho(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _sniffer_falha(monkeypatch)
+    _confere_excel(LeitorCsv(_grava(tmp_path, _EXCEL.encode("cp1252"))))
+
+
+def test_excel_crlf_com_aspas_resultado_final_em_qualquer_versao(tmp_path: Path) -> None:
+    # Sem forçar nada: o Sniffer acerta ou falha conforme a versão; o resultado é o mesmo.
+    _confere_excel(LeitorCsv(_grava(tmp_path, _EXCEL.encode("cp1252"))))
+
+
+def test_cabecalho_sem_candidato_devolve_virgula(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _sniffer_falha(monkeypatch)
+    # O cabeçalho não tem nenhum delimitador candidato.
     leitor = LeitorCsv(_grava(tmp_path, b'nome\r\n"a;b"\r\n"c\r\nd"\r\n'))
     assert leitor.formato.delimitador == ","
 

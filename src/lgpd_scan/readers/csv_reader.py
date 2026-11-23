@@ -20,6 +20,9 @@ _LIMITE_CAMPO = 16 * 1024 * 1024
 _TAMANHO_AMOSTRA = 65_536  # caracteres, não bytes
 _TAMANHO_BLOCO = 1 << 20  # bytes por leitura na validação da codificação
 _DELIMITADORES = ",;\t|"
+# O csv só recusa estes caracteres como delimitador a partir do Python 3.13; no 3.11 e no 3.12
+# ele os aceita e o arquivo viraria uma coluna só.
+_DELIMITADORES_PROIBIDOS = frozenset('"\r\n')
 
 
 class ErroLeitura(Exception):
@@ -98,6 +101,8 @@ class LeitorCsv:
         if delimitador is not None:
             if len(delimitador) != 1:
                 raise ErroLeitura("o delimitador deve ter exatamente 1 caractere")
+            if delimitador in _DELIMITADORES_PROIBIDOS:
+                raise ErroLeitura("delimitador não aceito: aspas e quebras de linha")
             try:
                 csv.reader([], delimiter=delimitador)  # o próprio csv recusa aspas e quebras
             except (ValueError, TypeError):
