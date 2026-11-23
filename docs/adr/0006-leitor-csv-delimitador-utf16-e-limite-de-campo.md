@@ -50,6 +50,8 @@ O ADR de confiança e risco da Tarefa 9, previsto no plano como 0006, passa a se
 - **Negativas / custos aceitos:** se um nome de coluna contiver um delimitador, o cabeçalho
   pode apontar o candidato errado. UTF-32 fica de fora (a BOM `FF FE 00 00` também começa
   com `FF FE` e seria lida como UTF-16). Linha vazia antes do cabeçalho é ignorada. O erro de
-  campo grande demais aponta a linha do estouro, não a da aspa.
+  campo grande demais aponta a linha do estouro, não a da aspa. Um campo legítimo acima de
+  16 Mi caracteres falha de propósito. O limite do módulo `csv` é global ao processo, mas o
+  leitor o eleva só durante a leitura e o restaura depois.
 - **O que revisitar e quando:** se aparecer arquivo real que quebre a heurística, ou quando
   UTF-32 for pedido.
