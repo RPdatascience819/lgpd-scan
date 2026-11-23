@@ -163,6 +163,27 @@ def test_conflito_sem_contexto_ou_com_os_dois_vira_cpf_media_ambiguo(coluna: str
     ]
 
 
+@pytest.mark.parametrize(
+    ("coluna", "tipo", "confianca", "ambiguo"),
+    [
+        ("telefone", Tipo.TELEFONE, Confianca.ALTA, False),
+        ("telefone_email", Tipo.TELEFONE, Confianca.ALTA, False),
+        ("contato (tel/email)", Tipo.TELEFONE, Confianca.ALTA, False),
+        ("cpf", Tipo.CPF, Confianca.ALTA, False),
+        ("cpf_email", Tipo.CPF, Confianca.ALTA, False),
+        ("cpf_telefone", Tipo.CPF, Confianca.MEDIA, True),
+        ("obs", Tipo.CPF, Confianca.MEDIA, True),
+    ],
+)
+def test_conflito_decide_pela_pertinencia_de_cpf_e_telefone(
+    coluna: str, tipo: Tipo, confianca: Confianca, ambiguo: bool
+) -> None:
+    achados = classificar_celula(_cpf_e_telefone(), coluna)
+    assert [(a.ocorrencia.tipo, a.confianca, a.ambiguo) for a in achados] == [
+        (tipo, confianca, ambiguo)
+    ]
+
+
 def test_conflito_por_sobreposicao_parcial_com_mais_55() -> None:
     texto = "+55 " + _cpf_e_telefone()
     # Pré-condição: os dois detectores acham algo, e os intervalos não são idênticos.

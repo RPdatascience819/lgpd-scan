@@ -113,10 +113,11 @@ def classificar_celula(texto: str, nome_coluna: str) -> list[Achado]:
         for tel in telefones:
             if not _sobrepoe(cpf, tel):
                 continue
-            if tipos == {Tipo.TELEFONE}:
+            # Só a pertinência de CPF e TELEFONE importa; EMAIL, CNPJ etc. não interferem.
+            if Tipo.TELEFONE in tipos and Tipo.CPF not in tipos:
                 descartadas.add(cpf)
                 forcadas[tel] = (Confianca.ALTA, False)
-            elif tipos == {Tipo.CPF}:
+            elif Tipo.CPF in tipos and Tipo.TELEFONE not in tipos:
                 descartadas.add(tel)
                 forcadas[cpf] = (Confianca.ALTA, False)
             else:  # sem contexto, ou contexto dos dois: CPF, confiança média, ambíguo
