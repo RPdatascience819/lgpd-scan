@@ -11,7 +11,11 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-csv.field_size_limit(2**31 - 1)
+# Limite de caracteres por campo. O Excel limita uma célula a 32.767 caracteres (Microsoft,
+# "Excel specifications and limits"); 16 Mi é 512 vezes isso. Sem limite, uma aspa aberta e
+# nunca fechada engoliria o arquivo inteiro num único campo, com pico de memória do tamanho
+# dele. Lido na hora do uso (`_linhas_brutas`), para os testes poderem reduzi-lo.
+_LIMITE_CAMPO = 16 * 1024 * 1024
 
 _TAMANHO_AMOSTRA = 65_536  # caracteres, não bytes
 _TAMANHO_BLOCO = 1 << 20  # bytes por leitura na validação da codificação
@@ -31,6 +35,9 @@ class FormatoCsv:
 def _linha_do_erro(caminho: Path, encoding: str) -> int | None:
     """Decodifica em streaming (blocos fixos). Devolve a linha (1-based) do primeiro byte
     inválido, ou `None` se o arquivo inteiro decodifica."""
+    # O decodificador incremental do utf-8-sig consome o BOM e desloca `erro.start` em 3 bytes.
+    # Para achar a linha o BOM é irrelevante (não contém "\n"), e "utf-8" aceita os mesmos bytes.
+    encoding = "utf-8" if encoding == "utf-8-sig" else encoding
     decodificador = codecs.getincrementaldecoder(encoding)()
     linhas_antes = 0
     with open(caminho, "rb") as f:
@@ -63,9 +70,13 @@ def _decide_encoding(caminho: Path, encoding: str | None) -> str:
     linha = None
     for candidata in candidatas:
         try:
+            # `_is_text_encoding` é atributo privado, mas é o único jeito estável de recusar
+            # codecs que não são de texto (hex, zlib, base64...) antes de usá-los.
+            if not codecs.lookup(candidata)._is_text_encoding:
+                raise LookupError(candidata)
             linha = _linha_do_erro(caminho, candidata)
-        except LookupError:
-            raise ErroLeitura(f"codificação desconhecida: {candidata!r}") from None
+        except (LookupError, TypeError, ValueError):
+            raise ErroLeitura(f"codificação não suportada: {candidata!r}") from None
         if linha is None:
             return candidata
     raise ErroLeitura(
@@ -103,18 +114,27 @@ class LeitorCsv:
             return csv.Sniffer().sniff(amostra, delimiters=_DELIMITADORES).delimiter
         except csv.Error:
             # O Sniffer falha com CRLF e campos entre aspas: conta cada candidato no cabeçalho.
-            cabecalho = amostra.splitlines()[0] if amostra else ""
+            # Mesmo cabeçalho de `_mede_cabecalho`: primeira linha não vazia, só por "\n".
+            cabecalho = next(
+                (linha.rstrip("\r") for linha in amostra.split("\n") if linha.rstrip("\r")), ""
+            )
             return max(_DELIMITADORES, key=cabecalho.count) if cabecalho else ","
 
     def _linhas_brutas(self) -> Iterator[list[str]]:
         """Linhas não vazias, como o `csv.reader` as entrega, sem alterar o conteúdo."""
+        csv.field_size_limit(_LIMITE_CAMPO)
         with open(self._caminho, encoding=self.formato.encoding, newline="") as f:
             leitor = csv.reader(f, delimiter=self.formato.delimitador)
             try:
                 for linha in leitor:
                     if linha:
                         yield linha
-            except csv.Error:
+            except csv.Error as erro:
+                if "field larger than field limit" in str(erro):
+                    raise ErroLeitura(
+                        f"campo maior que {_LIMITE_CAMPO} caracteres na linha "
+                        f"{leitor.line_num}; procure uma aspa sem fechamento antes dela"
+                    ) from None
                 raise ErroLeitura(f"CSV malformado na linha {leitor.line_num}") from None
 
     def _mede_cabecalho(self) -> list[str]:

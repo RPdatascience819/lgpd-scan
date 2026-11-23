@@ -1,12 +1,11 @@
 """Testes do leitor de CSV. Todo arquivo nasce em `tmp_path`, gravado em bytes."""
 
-import csv
 import tracemalloc
 from pathlib import Path
 
 import pytest
 
-from lgpd_scan.readers import ErroLeitura, FormatoCsv, LeitorCsv
+from lgpd_scan.readers import ErroLeitura, FormatoCsv, LeitorCsv, csv_reader
 
 
 def _grava(tmp_path: Path, conteudo: bytes, nome: str = "dados.csv") -> Path:
@@ -97,9 +96,11 @@ def test_espacos_do_dado_ficam_intactos(tmp_path: Path) -> None:
 
 
 def test_amostra_do_sniff_e_texto_nao_bytes(tmp_path: Path) -> None:
-    # Cabecalho com multibyte logo na fronteira de 64 KiB de bytes: nao pode quebrar.
-    corpo = "a;b\n" + "ã;1\n" * 30_000
-    leitor = LeitorCsv(_grava(tmp_path, corpo.encode()))
+    # Cabecalho de 5 bytes e linhas de 5: o corte em 65.536 bytes partiria um "ã" ao meio.
+    corpo = ("ab;c\n" + "ã;1\n" * 30_000).encode()
+    # Premissa: o primeiro byte fora de uma amostra de 65.536 bytes e de continuacao.
+    assert 0x80 <= corpo[65_536] <= 0xBF
+    leitor = LeitorCsv(_grava(tmp_path, corpo))
     assert leitor.formato == FormatoCsv("utf-8-sig", ";")
     assert len(_todas(leitor)) == 30_000
 
@@ -133,30 +134,75 @@ def test_delimitador_invalido(tmp_path: Path, delimitador: str) -> None:
         LeitorCsv(_grava(tmp_path, b"a\n"), delimitador=delimitador)
 
 
-def test_csv_error_vira_erro_leitura_com_linha(tmp_path: Path) -> None:
+def test_csv_error_vira_erro_leitura_com_linha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     caminho = _grava(tmp_path, b"a,b\n1,2\n" + b"y" * 50 + b",3\n")
-    antigo = csv.field_size_limit()
-    csv.field_size_limit(10)  # o leitor fixa o limite so na importacao; aqui o reduzimos
-    try:
-        with pytest.raises(ErroLeitura, match="linha 3") as info:
-            LeitorCsv(caminho)
-    finally:
-        csv.field_size_limit(antigo)
+    monkeypatch.setattr(csv_reader, "_LIMITE_CAMPO", 10)
+    with pytest.raises(ErroLeitura, match="linha 3") as info:
+        LeitorCsv(caminho)
     assert "yyyy" not in str(info.value)
     assert info.value.__cause__ is None
 
 
-def test_csv_error_em_linhas_tambem_vira_erro_leitura(tmp_path: Path) -> None:
+def test_csv_error_em_linhas_tambem_vira_erro_leitura(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     caminho = _grava(tmp_path, b"a,b\n1,2\n" + b"y" * 50 + b",3\n")
     leitor = LeitorCsv(caminho)
-    antigo = csv.field_size_limit()
-    csv.field_size_limit(10)
-    try:
-        with pytest.raises(ErroLeitura, match="linha 3") as info:
-            _todas(leitor)
-    finally:
-        csv.field_size_limit(antigo)
+    monkeypatch.setattr(csv_reader, "_LIMITE_CAMPO", 10)
+    with pytest.raises(ErroLeitura, match="linha 3") as info:
+        _todas(leitor)
     assert info.value.__cause__ is None
+
+
+def test_aspa_sem_fechamento_estoura_o_limite_com_sugestao(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(csv_reader, "_LIMITE_CAMPO", 1_000)
+    caminho = _grava(tmp_path, b'a,b\n1,"ABERTA\n' + b"MARCADOR,x\n" * 200)
+    with pytest.raises(ErroLeitura) as info:
+        LeitorCsv(caminho)
+    mensagem = str(info.value)
+    assert "aspa sem fechamento" in mensagem
+    assert "campo maior" in mensagem
+    assert "MARCADOR" not in mensagem
+    assert "ABERTA" not in mensagem
+    assert info.value.__cause__ is None
+
+
+@pytest.mark.parametrize(
+    ("conteudo", "encoding", "linha"),
+    [
+        (b"\xef\xbb\xbfa\nb\nc\xff", "utf-8-sig", 3),
+        (b"\xef\xbb\xbfa\n\xff", "utf-8-sig", 2),
+        (b"\xef\xbb\xbf" + b"x,y\n" * 400_000 + b"\xff\n", "utf-8-sig", 400_001),
+        (b"a\nb\nc\xff", "utf-8", 3),
+        (b"a\n\xff", "utf-8", 2),
+        ("a\nb\n".encode("utf-16") + b"\x00\xd8" + "x\n".encode("utf-16-le"), "utf-16", 3),
+        ("a\n".encode("utf-16") + b"\x00\xd8" + "x\n".encode("utf-16-le"), "utf-16", 2),
+    ],
+)
+def test_numero_exato_da_linha_do_erro(
+    tmp_path: Path, conteudo: bytes, encoding: str, linha: int
+) -> None:
+    with pytest.raises(ErroLeitura) as info:
+        LeitorCsv(_grava(tmp_path, conteudo), encoding=encoding)
+    assert f"linha {linha} " in str(info.value)
+
+
+@pytest.mark.parametrize("codec", ["hex", "zlib"])
+def test_codec_que_nao_e_de_texto_vira_erro_leitura(tmp_path: Path, codec: str) -> None:
+    with pytest.raises(ErroLeitura, match="não suportada") as info:
+        LeitorCsv(_grava(tmp_path, b"a,b\n"), encoding=codec)
+    assert info.value.__cause__ is None
+
+
+def test_linha_vazia_antes_do_cabecalho_no_recuo_do_delimitador(tmp_path: Path) -> None:
+    texto = '\r\nnome;cpf;obs\r\nJoão Ávila;123;"tem; ponto"\r\nMaria;;"linha\r\nquebrada"\r\n'
+    leitor = LeitorCsv(_grava(tmp_path, texto.encode("cp1252")))
+    assert leitor.formato == FormatoCsv("cp1252", ";")
+    assert leitor.cabecalho == ["nome", "cpf", "obs"]
 
 
 def test_linhas_totalmente_vazias_sao_puladas(tmp_path: Path) -> None:
