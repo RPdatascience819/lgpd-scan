@@ -41,7 +41,9 @@ _LIMIAR = Fraction(LIMIAR_MAIORIA)
 class Achado:
     ocorrencia: Ocorrencia
     confianca: Confianca
-    ambiguo: bool  # conflito CPF e telefone resolvido sem contexto
+    # Conflito CPF e telefone resolvido sem contexto. Na coluna que `analisar` resolve como
+    # telefone, o achado continua ambiguo=True, mas vale como a `alternativa` (ver `efetivo`).
+    ambiguo: bool
     # No ambíguo, o telefone descartado (o span pode incluir o +55); `analisar` decide pela
     # maioria da coluna se vale o CPF ou esta alternativa.
     alternativa: Ocorrencia | None = None
@@ -112,6 +114,8 @@ def classificar_celula(texto: str, nome_coluna: str) -> list[Achado]:
     forcadas: dict[Ocorrencia, tuple[Confianca, bool, Ocorrencia | None]] = {}
     cpfs = [o for o in ocorrencias if o.tipo is Tipo.CPF]
     telefones = [o for o in ocorrencias if o.tipo is Tipo.TELEFONE]
+    # Um CPF que se sobrepõe a dois telefones (ou o inverso) é praticamente impossível; se
+    # acontecer, o resultado depende da ordem destes laços.
     for cpf in cpfs:
         for tel in telefones:
             if not _sobrepoe(cpf, tel):
@@ -155,6 +159,8 @@ class LinhaRelatorio:
     pct_preenchidas: float  # células da coluna com ≥1 ocorrência do tipo / preenchidas * 100
     confianca: Confianca  # predominante entre as que contam (ou MEDIA se só suspeitas)
     amostra: str  # primeira ocorrência, já mascarada
+    # Há ocorrência de conflito CPF e telefone resolvido sem contexto: na linha CPF, como CPF
+    # MEDIA; na linha TELEFONE, quando a coluna foi resolvida como telefone pela maioria.
     ambiguo: bool
 
 
@@ -181,7 +187,6 @@ class _Acumulador:
         "amb",
         "amb_celulas",
         "amostra",
-        "amostra_amb",
         "amostra_firme",
         "celulas",
         "celulas_firmes",
@@ -197,7 +202,6 @@ class _Acumulador:
         self.amb_celulas = 0  # células com ambíguo e sem telefone firme na célula
         self.amostra = ""  # primeira ocorrência (mascarada), ambígua ou não
         self.amostra_firme = ""  # primeira ocorrência não ambígua
-        self.amostra_amb = ""  # primeira alternativa de telefone do ambíguo, mascarada
 
 
 class _Vista(NamedTuple):
@@ -236,7 +240,7 @@ def _vista(acc: _Acumulador, tipo: Tipo, resolvida: bool, cpf: _Acumulador | Non
         cpf.amb,
         acc.celulas,
         acc.celulas + cpf.amb_celulas,
-        acc.amostra or cpf.amostra_amb,
+        acc.amostra,  # a coluna só resolve como telefone com telefone firme: há amostra
         True,
     )
 
@@ -267,9 +271,6 @@ def analisar(leitor: LeitorCsv, nome_arquivo: str) -> Analise:
                 if achado.ambiguo and achado.alternativa is not None:
                     acc.amb += 1
                     tem_ambiguo = True
-                    if not acc.amostra_amb:
-                        alt = achado.alternativa
-                        acc.amostra_amb = mascarar(texto[alt.inicio : alt.fim], alt.tipo)
                     continue
                 firmes.add(o.tipo)
                 if not acc.amostra_firme:
@@ -364,7 +365,11 @@ def _vale_como_telefone(achado: Achado, indice_coluna: int, analise: Analise) ->
 
 
 def conta(achado: Achado, indice_coluna: int, analise: Analise) -> bool:
-    """Se o achado entra no risco e no `anonymize`: ALTA sempre; MEDIA só com a maioria."""
+    """Se o achado entra no risco e no `anonymize`.
+
+    ALTA sempre; MEDIA só com a maioria do par; o ambíguo de uma coluna resolvida como
+    telefone (`ambiguos_como_telefone`) também conta.
+    """
     if achado.confianca is Confianca.ALTA or _vale_como_telefone(achado, indice_coluna, analise):
         return True
     return (indice_coluna, achado.ocorrencia.tipo) in analise.media_conta

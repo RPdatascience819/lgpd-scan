@@ -3,6 +3,7 @@
 import csv
 import io
 import random
+from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -495,7 +496,7 @@ def test_obs_minoritaria_com_ambiguos_continua_cpf_suspeito(tmp_path: Path) -> N
     assert analise.risco is Risco.NENHUM
 
 
-def test_coluna_so_de_ambiguos_fica_cpf_pela_maioria_de_cpf(tmp_path: Path) -> None:
+def test_coluna_so_de_ambiguos_nao_resolve_por_falta_de_telefone_firme(tmp_path: Path) -> None:
     celulas = [_cpf_e_telefone() for _ in range(10)]
     analise = analisar(_csv(tmp_path, ["obs"], [[c] for c in celulas]), "x.csv")
     assert [c.tipo for c in analise.colunas] == [Tipo.CPF]
@@ -523,3 +524,111 @@ def test_nenhum_valor_original_aparece_na_analise(tmp_path: Path) -> None:
     texto = repr(analisar(leitor, "x.csv"))
     for valor in valores:
         assert valor not in texto
+
+
+# ------------------------------------------- fronteiras da resolução dos ambíguos
+
+
+def _conflitos(quantos: int) -> list[str]:
+    """Números distintos que são CPF válido e celular válido ao mesmo tempo."""
+    rng = random.Random(3)
+    achados: list[str] = []
+    while len(achados) < quantos:
+        numero = gerar_cpf(rng, formatado=False)
+        if detectar_telefone(numero) and numero not in achados:
+            achados.append(numero)
+    return achados
+
+
+def _fone() -> str:
+    return gerar_telefone(RNG, celular=True, formatado=True)
+
+
+def _obs(tmp_path: Path, celulas: list[str]) -> Analise:
+    return analisar(_csv(tmp_path, ["obs"], [[c] for c in celulas]), "x.csv")
+
+
+def test_ambiguo_e_telefone_firme_na_mesma_celula_nao_passam_de_100_por_cento(
+    tmp_path: Path,
+) -> None:
+    (conflito,) = _conflitos(1)
+    analise = _obs(tmp_path, [f"{conflito} {_fone()}", _fone(), _fone(), _fone()])
+    assert analise.ambiguos_como_telefone == frozenset({0})
+    (linha,) = analise.colunas
+    assert linha.tipo is Tipo.TELEFONE
+    assert linha.pct_preenchidas == pytest.approx(100.0)
+    assert linha.contam == 5  # 4 telefones firmes + 1 ambíguo
+
+
+def test_dois_ambiguos_na_mesma_celula_somam_dois(tmp_path: Path) -> None:
+    primeiro, segundo = _conflitos(2)
+    analise = _obs(tmp_path, [f"{primeiro} {segundo}", _fone(), _fone(), _fone()])
+    assert analise.ambiguos_como_telefone == frozenset({0})
+    (linha,) = analise.colunas
+    assert (linha.tipo, linha.contam) == (Tipo.TELEFONE, 5)  # 3 firmes + 2 ambíguos
+
+
+def test_fronteira_da_perna_do_telefone_exatos_50_por_cento_resolve(tmp_path: Path) -> None:
+    (conflito,) = _conflitos(1)
+    no_limite = _obs(tmp_path, [conflito, *[_fone() for _ in range(4)], *["texto"] * 3])
+    assert no_limite.ambiguos_como_telefone == frozenset({0})  # 4 de 8
+    abaixo = _obs(tmp_path, [conflito, *[_fone() for _ in range(3)], *["texto"] * 4])
+    assert abaixo.ambiguos_como_telefone == frozenset()  # 3 de 8
+    assert {c.tipo for c in abaixo.colunas} == {Tipo.CPF, Tipo.TELEFONE}
+
+
+def test_perna_do_cpf_telefone_e_cpf_com_50_por_cento_nao_resolve(tmp_path: Path) -> None:
+    primeiro, segundo = _conflitos(2)
+    analise = _obs(tmp_path, [primeiro, segundo, _fone(), _fone()])
+    assert analise.ambiguos_como_telefone == frozenset()  # telefone 2/4 e CPF 2/4
+    assert {c.tipo for c in analise.colunas} == {Tipo.CPF, Tipo.TELEFONE}
+
+
+# --------------------------------- contrato com o anonymize: conta() e efetivo()
+
+
+def test_contagem_por_conta_e_efetivo_bate_com_analisar(tmp_path: Path) -> None:
+    rng = random.Random(11)  # local ao teste: não depende da ordem dos outros testes
+    conflitos = _conflitos(6)
+    cabecalho = ["contato", "obs", "col7", "empresa"]
+    linhas: list[list[str]] = []
+    for _ in range(300):
+        contato = rng.choice(conflitos) if rng.random() < 0.05 else ""
+        if not contato and rng.random() < 0.9:
+            contato = gerar_telefone(rng, celular=True, formatado=False)
+        sorteio = rng.random()
+        if sorteio < 0.10:
+            obs = rng.choice(conflitos)
+        elif sorteio < 0.15:
+            obs = f"{gerar_email(rng)} {gerar_telefone(rng, celular=True, formatado=True)}"
+        else:
+            obs = "texto"
+        col7 = _cpf_sem_ddd_com(rng) if rng.random() < 0.8 else "sem dado"
+        empresa = gerar_cnpj(rng, alfanumerico=False, formatado=rng.random() < 0.5)
+        linhas.append([contato, obs, col7, empresa])
+    leitor = _csv(tmp_path, cabecalho, linhas)
+    analise = analisar(leitor, "x.csv")
+
+    # Os cenários realmente aconteceram.
+    assert analise.ambiguos_como_telefone
+    assert any(c.suspeitas > 0 for c in analise.colunas)
+    assert analise.media_conta
+
+    contagem: Counter[tuple[int, Tipo]] = Counter()
+    ingenua: Counter[tuple[int, Tipo]] = Counter()  # reconta sem efetivo(): deve divergir
+    for linha in leitor.linhas():
+        for indice, texto in enumerate(linha):
+            for achado in classificar_celula(texto, cabecalho[indice]):
+                if conta(achado, indice, analise):
+                    contagem[(indice, efetivo(achado, indice, analise).tipo)] += 1
+                    ingenua[(indice, achado.ocorrencia.tipo)] += 1
+    esperado = {(c.indice_coluna, c.tipo): c.contam for c in analise.colunas if c.contam}
+    assert dict(contagem) == esperado
+    assert dict(ingenua) != esperado
+
+
+def _cpf_sem_ddd_com(rng: random.Random) -> str:
+    while True:
+        numero = gerar_cpf(rng, formatado=False)
+        if numero.startswith("20"):
+            return numero
