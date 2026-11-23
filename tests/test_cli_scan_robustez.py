@@ -271,7 +271,7 @@ def test_oserror_no_stdout(
     try:
         falso = _StdoutQuebrado(fd, erro)
         monkeypatch.setattr(sys, "stdout", falso)
-        monkeypatch.setattr(os, "name", "nt" if nt else "posix")
+        monkeypatch.setattr(cli, "_WINDOWS", nt)
         codigo = main(["scan", str(arquivo), "--format", formato])
     finally:
         os.close(fd)

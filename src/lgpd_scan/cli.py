@@ -26,6 +26,10 @@ from lgpd_scan.report import (
 )
 from lgpd_scan.scoring import Analise, Risco, analisar
 
+# Lido uma vez, no import: os testes trocam esta constante, nunca `os.name` (no Python 3.11 o
+# pathlib lê `os.name` a cada `Path()`, e trocá-lo derruba o pytest).
+_WINDOWS = os.name == "nt"
+
 SAIDA_OK = 0
 SAIDA_RISCO = 1
 SAIDA_ERRO = 2
@@ -110,7 +114,7 @@ def _desviar_stdout_para_o_nulo() -> None:
 
 def _e_pipe_fechado(erro: OSError) -> bool:
     """BrokenPipeError, ou EINVAL no Windows, que é como ele sinaliza o pipe fechado."""
-    return isinstance(erro, BrokenPipeError) or (os.name == "nt" and erro.errno == errno.EINVAL)
+    return isinstance(erro, BrokenPipeError) or (_WINDOWS and erro.errno == errno.EINVAL)
 
 
 def _escrever_no_stdout(analise: Analise, formato: str) -> int | None:
