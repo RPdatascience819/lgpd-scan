@@ -1,5 +1,6 @@
 """Robustez do `scan`: nome de coluna, --output atômico, caminhos e pipe quebrado."""
 
+import errno
 import json
 import os
 import random
@@ -36,6 +37,7 @@ def test_nome_de_coluna_seguro_mascara_cpf_e_email_e_deixa_o_resto() -> None:
     assert email not in mascarado
     assert "***" in mascarado
     assert mascarado.endswith("@exemplo.com") or mascarado.endswith("@example.com")
+    assert "@" in mascarado and mascarado.split("@")[0].count("*") >= 1
 
 
 def _sem_cabecalho(pasta: Path) -> tuple[Path, str, str]:
@@ -111,7 +113,7 @@ def test_output_com_force_color_sai_sem_ansi_e_com_amostra_inteira(
     assert "a" + "*" * 39 + "@exemplo.com" in texto
 
 
-def test_falha_na_renderizacao_preserva_o_arquivo_anterior_e_nao_deixa_tmp(
+def test_falha_antes_de_gravar_preserva_o_anterior(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def falha(*_a: object, **_k: object) -> str:
@@ -168,36 +170,134 @@ def test_laco_de_symlink_ao_resolver_da_2(
     assert capsys.readouterr().err.startswith("lgpd-scan: erro: ")
 
 
-class _StdoutQuebrado:
-    """Um stdout cujo leitor já fechou (`| head`)."""
-
-    def write(self, _texto: str) -> int:
-        raise BrokenPipeError
-
-    def flush(self) -> None:
-        raise BrokenPipeError
-
-    def isatty(self) -> bool:
-        return False
-
-    def __init__(self, fd: int) -> None:
-        self._fd = fd
-
-    def fileno(self) -> int:
-        return self._fd  # um descritor válido: o programa o redireciona para o nulo
+def test_entrada_com_nome_terminado_em_tmp_nao_e_destruida(tmp_path: Path) -> None:
+    entrada = tmp_path / "dados.csv.tmp"
+    entrada.write_text("cpf\n" + gerar_cpf(RNG, formatado=True) + "\n", encoding="utf-8")
+    antes = entrada.read_bytes()
+    destino = tmp_path / "dados.csv"
+    assert main(["scan", str(entrada), "--output", str(destino)]) == 1
+    assert entrada.read_bytes() == antes
+    assert "risco ALTO" in destino.read_text(encoding="utf-8")
 
 
+def test_tmp_do_usuario_preexistente_continua_intacto(tmp_path: Path) -> None:
+    alheio = tmp_path / "r.json.tmp"
+    alheio.write_text("do usuario", encoding="utf-8")
+    destino = tmp_path / "r.json"
+    codigo = main(["scan", str(_com_cpf(tmp_path)), "--format", "json", "--output", str(destino)])
+    assert codigo == 1
+    assert alheio.read_text(encoding="utf-8") == "do usuario"
+    assert json.loads(destino.read_text(encoding="utf-8"))["risco"] == "alto"
+
+
+def test_nenhum_temporario_sobra_no_sucesso(tmp_path: Path) -> None:
+    destino = tmp_path / "r.txt"
+    assert main(["scan", str(_com_cpf(tmp_path)), "--output", str(destino)]) == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["cpf.csv", "r.txt"]
+
+
+def test_falha_durante_a_escrita_do_temporario_preserva_o_anterior(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _EscritaQuebrada:
+        def __init__(self, fd: int) -> None:
+            self._fd = fd
+
+        def __enter__(self) -> "_EscritaQuebrada":
+            return self
+
+        def __exit__(self, *_a: object) -> None:
+            os.close(self._fd)
+
+        def write(self, _texto: str) -> int:
+            raise OSError("disco cheio simulado")
+
+    monkeypatch.setattr(os, "fdopen", lambda fd, *_a, **_k: _EscritaQuebrada(fd))
+    destino = tmp_path / "r.txt"
+    destino.write_text("anterior", encoding="utf-8")
+    assert main(["scan", str(_com_cpf(tmp_path)), "--output", str(destino)]) == 2
+    assert destino.read_text(encoding="utf-8") == "anterior"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["cpf.csv", "r.txt"]
+
+
+def _digitos_seguidos(texto: str) -> int:
+    return max((len(m) for m in re.findall(r"[0-9]+", texto)), default=0)
+
+
+def test_dados_colados_no_nome_nao_deixam_9_digitos_seguidos() -> None:
+    cpf_puro = gerar_cpf(RNG, formatado=False)
+    cpf_f = gerar_cpf(RNG, formatado=True)
+    outro = gerar_cpf(RNG, formatado=False)
+    nomes = [
+        cpf_puro + outro,
+        cpf_f + cpf_f,
+        "(11) 91234-5678" + cpf_puro,
+        "11" + cpf_puro,  # telefone sobreposto a um CPF
+        f"a {cpf_f} b {gerar_email(RNG)} c {cpf_puro}{outro} d",
+    ]
+    for nome in nomes:
+        seguro = nome_de_coluna_seguro(nome)
+        assert _digitos_seguidos(seguro) < 9, nome
+        assert len(seguro) == len(nome)
+
+
+def test_nome_legitimo_com_9_digitos_e_mascarado_aceito_como_falso_positivo() -> None:
+    assert nome_de_coluna_seguro("pedido_1234567890123") == "pedido_*************"
+
+
+@pytest.mark.parametrize(
+    ("erro", "nt", "esperado"),
+    [
+        (OSError(errno.ENOSPC, "No space left on device"), True, 2),
+        (OSError(errno.ENOSPC, "No space left on device"), False, 2),
+        (OSError(errno.EINVAL, "Invalid argument"), True, 1),
+        (OSError(errno.EINVAL, "Invalid argument"), False, 2),
+        (BrokenPipeError(errno.EPIPE, "Broken pipe"), True, 1),
+        (BrokenPipeError(errno.EPIPE, "Broken pipe"), False, 1),
+    ],
+)
 @pytest.mark.parametrize("formato", ["table", "json"])
-def test_pipe_quebrado_no_stdout_nao_troca_o_codigo_de_risco(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, formato: str
+def test_oserror_no_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    erro: OSError,
+    nt: bool,
+    esperado: int,
+    formato: str,
 ) -> None:
     arquivo = _com_cpf(tmp_path)
     fd = os.open(os.devnull, os.O_WRONLY)
     try:
-        monkeypatch.setattr(sys, "stdout", _StdoutQuebrado(fd))
-        assert main(["scan", str(arquivo), "--format", formato]) == 1
+        falso = _StdoutQuebrado(fd, erro)
+        monkeypatch.setattr(sys, "stdout", falso)
+        monkeypatch.setattr(os, "name", "nt" if nt else "posix")
+        codigo = main(["scan", str(arquivo), "--format", formato])
     finally:
         os.close(fd)
+    assert codigo == esperado
+    if esperado == 2:
+        assert "não foi possível escrever a saída" in capsys.readouterr().err
+
+
+class _StdoutQuebrado:
+    """Um stdout cujo `write` falha com o erro dado (pipe fechado, disco cheio...)."""
+
+    def __init__(self, fd: int, erro: OSError) -> None:
+        self._fd = fd
+        self._erro = erro
+
+    def write(self, _texto: str) -> int:
+        raise self._erro
+
+    def flush(self) -> None:
+        raise self._erro
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        return self._fd  # um descritor válido: o programa o redireciona para o nulo
 
 
 def test_ctrl_c_vira_interrompido_e_130(

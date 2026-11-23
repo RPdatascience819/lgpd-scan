@@ -6,6 +6,7 @@ mascarada em `scoring`, e este módulo só a repassa.
 
 import io
 import json
+import re
 from typing import TextIO
 
 from rich import box
@@ -19,6 +20,8 @@ from lgpd_scan.mascara import mascarar
 from lgpd_scan.scoring import Analise, Confianca, LinhaRelatorio
 
 SCHEMA_VERSION = 1
+
+_DIGITOS_LONGOS = re.compile(r"[0-9]{9,}")  # só dígitos ASCII, não os de outros alfabetos
 
 # Largura usada quando o destino não é um terminal (arquivo ou pipe): sem ela o Rich assume 80
 # colunas e a amostra mascarada de um e-mail longo seria dobrada de forma ilegível.
@@ -94,6 +97,11 @@ def nome_de_coluna_seguro(nome: str) -> str:
 
     Um CSV sem cabeçalho faz a primeira linha de dados virar "cabeçalho"; sem isto, o relatório
     imprimiria um CPF ou e-mail inteiro no campo `coluna`.
+
+    Defesa em profundidade: dados colados um no outro ("<CPF><CPF>") escapam das fronteiras dos
+    detectores. Por isso, depois da máscara, toda sequência de 9 ou mais dígitos ASCII que
+    restar vira `*`, com o mesmo comprimento. Falso positivo aceito: um nome legítimo como
+    "pedido_11144477735" é mascarado e gera o aviso de cabeçalho.
     """
     grupos = _agrupar([o for detectar in DETECTORES for o in detectar(nome)])
     for grupo in reversed(grupos):  # da direita para a esquerda: os índices não se deslocam
@@ -104,7 +112,7 @@ def nome_de_coluna_seguro(nome: str) -> str:
         meio = mascarar(nome[maior.inicio : maior.fim], maior.tipo)
         depois = "".join("*" if c.isalnum() else c for c in nome[maior.fim : fim])
         nome = nome[:inicio] + antes + meio + depois + nome[fim:]
-    return nome
+    return _DIGITOS_LONGOS.sub(lambda m: "*" * len(m.group()), nome)
 
 
 def _milhar(n: int) -> str:

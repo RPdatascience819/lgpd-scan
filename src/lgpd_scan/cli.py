@@ -7,8 +7,10 @@ português, e nunca trazem o conteúdo de uma célula.
 
 import argparse
 import contextlib
+import errno
 import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import NoReturn
@@ -85,9 +87,13 @@ def _e_o_mesmo_arquivo(a: Path, b: Path) -> bool:
 
 def _gravar_atomico(texto: str, destino: Path) -> None:
     """Grava num temporário ao lado e troca: uma falha nunca deixa o relatório pela metade."""
-    temporario = destino.with_name(destino.name + ".tmp")
+    # `mkstemp` cria com O_EXCL e nome aleatório: nunca toca num arquivo do usuário, como um
+    # `r.json.tmp` que já exista. Limitação aceita: o `os.replace` não preserva permissões nem
+    # ACL do arquivo que estava no destino.
+    fd, nome = tempfile.mkstemp(dir=destino.parent, prefix="." + destino.name + ".", suffix=".tmp")
+    temporario = Path(nome)
     try:
-        with open(temporario, "w", encoding="utf-8", newline="") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(texto)
         os.replace(temporario, destino)
     except BaseException:
@@ -102,17 +108,31 @@ def _desviar_stdout_para_o_nulo() -> None:
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
 
 
-def _escrever_no_stdout(analise: Analise, formato: str) -> None:
+def _e_pipe_fechado(erro: OSError) -> bool:
+    """BrokenPipeError, ou EINVAL no Windows, que é como ele sinaliza o pipe fechado."""
+    return isinstance(erro, BrokenPipeError) or (os.name == "nt" and erro.errno == errno.EINVAL)
+
+
+def _escrever_no_stdout(analise: Analise, formato: str) -> int | None:
+    """Escreve o relatório. Devolve `SAIDA_ERRO` se não deu para escrever, senão `None`."""
     try:
         if formato == "json":
             sys.stdout.write(renderizar_json(analise) + "\n")
         else:
             renderizar_tabela(analise, criar_console(sys.stdout))
         sys.stdout.flush()
-    except (BrokenPipeError, SystemExit):  # `lgpd-scan scan x.csv | head`
+    except SystemExit:
         # O Rich trata o pipe quebrado sozinho: redireciona o fd 1 e encerra com SystemExit(1),
         # que se confundiria com "risco médio ou alto". Aqui o código de risco já está decidido.
         _desviar_stdout_para_o_nulo()
+    except OSError as erro:
+        if _e_pipe_fechado(erro):  # `lgpd-scan scan x.csv | head`
+            _desviar_stdout_para_o_nulo()
+        else:  # disco cheio, por exemplo
+            return _erro(
+                f"não foi possível escrever a saída: {erro.strerror or type(erro).__name__}"
+            )
+    return None
 
 
 def _aviso_de_cabecalho(cabecalho: list[str]) -> None:
@@ -156,7 +176,9 @@ def _comando_scan(args: argparse.Namespace) -> int:
 
     _aviso_de_cabecalho(leitor.cabecalho)
     if saida is None:
-        _escrever_no_stdout(analise, args.format)
+        falha = _escrever_no_stdout(analise, args.format)
+        if falha is not None:
+            return falha
     else:
         try:
             if args.format == "json":
