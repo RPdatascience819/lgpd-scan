@@ -3,8 +3,16 @@
 import random
 import re
 
+from lgpd_scan import _sinteticos
 from lgpd_scan._sinteticos import gerar_cnpj, gerar_cpf, gerar_email, gerar_telefone
 from lgpd_scan.detectors.digitos import dv_cnpj, dv_cpf
+from lgpd_scan.detectors.telefone import DDDS_VALIDOS
+
+
+def test_ddds_em_ordem_estavel() -> None:
+    # O teste de semente roda num processo só e não pega a ordem do frozenset
+    # variando com PYTHONHASHSEED; a tupla ordenada garante a reprodutibilidade.
+    assert tuple(sorted(DDDS_VALIDOS)) == _sinteticos._DDDS
 
 
 def _sequencia(semente: int) -> list[str]:

@@ -84,10 +84,17 @@ def test_digitos_de_outro_alfabeto() -> None:
 
 
 def test_parenteses_desbalanceados_nao_entram_na_fatia() -> None:
-    for texto in ("(11 98765-4321", "11) 98765-4321"):
-        for fatia in _fatias(texto):
-            assert "(" not in fatia
-            assert ")" not in fatia
+    assert _fatias("(11 98765-4321") == ["11 98765-4321"]
+    # Falso negativo aceito (decisão 4): o ")" solto impede o casamento.
+    assert _fatias("11) 98765-4321") == []
+
+
+def test_fronteira_so_barra_digitos() -> None:
+    # Caracterização: a fronteira só barra dígitos, como no CPF. O design §5.3 fala
+    # também em letras; a divergência é consciente. Consequência: em
+    # "joao11987654321@exemplo.com" as ocorrências de e-mail e de telefone se
+    # sobrepõem, e a Task 11 precisa tratar isso. Mudar a fronteira deve falhar aqui.
+    assert _fatias("ab11987654321cd") == ["11987654321"]
 
 
 def test_nove_separado_nao_casa() -> None:
