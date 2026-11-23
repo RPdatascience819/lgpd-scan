@@ -216,6 +216,7 @@ def _rodar(arquivo: Path) -> subprocess.CompletedProcess[str]:
         [sys.executable, "-m", "lgpd_scan", "scan", str(arquivo)],
         capture_output=True,
         text=True,
+        encoding="cp1252",  # a codificação do filho (PYTHONIOENCODING), não a do locale do pai
         env=ambiente,
         check=False,
     )
