@@ -7,9 +7,10 @@ Nada aqui lê dados reais nem usa rede.
 import random
 
 from lgpd_scan.detectors.digitos import dv_cnpj, dv_cpf
+from lgpd_scan.detectors.telefone import DDDS_VALIDOS
 
-# Provisório: a Tarefa 7 troca esta tupla por ``DDDS_VALIDOS``.
-_DDDS = ("11", "21", "31")
+# sorted: a ordem de um frozenset de str varia com PYTHONHASHSEED e quebraria a semente.
+_DDDS = tuple(sorted(DDDS_VALIDOS))
 _DOMINIOS = ("exemplo.com", "exemplo.org", "example.com")
 _ALFABETO_CNPJ = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _DIGITOS = "0123456789"
