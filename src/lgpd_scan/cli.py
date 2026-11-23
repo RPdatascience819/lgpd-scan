@@ -146,9 +146,9 @@ def _e_pipe_fechado(erro: OSError) -> bool:
     return isinstance(erro, BrokenPipeError) or (_WINDOWS and erro.errno == errno.EINVAL)
 
 
-def _escrever_protegido(escrever: Callable[[], None]) -> int | None:
+def _escrever_protegido(escrever: Callable[[], None], complemento: str = "") -> int | None:
     """Roda `escrever`, que imprime no stdout. Devolve `SAIDA_ERRO` se não deu para escrever
-    (um pipe fechado não conta como erro), senão `None`."""
+    (um pipe fechado não conta como erro), senão `None`. `complemento` fecha a mensagem de erro."""
     try:
         escrever()
         sys.stdout.flush()
@@ -162,6 +162,7 @@ def _escrever_protegido(escrever: Callable[[], None]) -> int | None:
         else:  # disco cheio, por exemplo
             return _erro(
                 f"não foi possível escrever a saída: {erro.strerror or type(erro).__name__}"
+                f"{complemento}"
             )
     return None
 
@@ -251,7 +252,8 @@ def _escrever_resumo(resumo: ResumoAnonimizacao, saida: Path) -> int | None:
             sys.stdout.write(f"  {tipo.value}: {quantas}\n")
         sys.stdout.write(f"Arquivo gravado em {saida}\n")
 
-    return _escrever_protegido(escrever)
+    # A cópia já está gravada: a mensagem avisa, para ninguém repetir a operação.
+    return _escrever_protegido(escrever, f" (a cópia anonimizada FOI gravada em {saida})")
 
 
 def _comando_anonymize(args: argparse.Namespace) -> int:

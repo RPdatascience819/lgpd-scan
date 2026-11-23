@@ -8,7 +8,6 @@ e, célula a célula, `conta` e `efetivo` dizem o que mascarar e com qual tipo. 
 import codecs
 import csv
 import os
-import re
 import tempfile
 from collections import Counter
 from dataclasses import dataclass
@@ -22,7 +21,7 @@ from lgpd_scan.readers import ErroLeitura, LeitorCsv
 from lgpd_scan.report import nome_de_coluna_seguro
 from lgpd_scan.scoring import Analise, analisar, classificar_celula, conta, efetivo
 
-_QUEBRA = re.compile(r"\r\n|\r|\n")
+_JA_EXISTE: Final = "o arquivo de saída já existe: {}; use --force para sobrescrever"
 _BLOCO_QUEBRA: Final = 1 << 16  # caracteres por leitura ao procurar a primeira quebra de linha
 _LIMITE_QUEBRA: Final = 1 << 24  # sem quebra até aqui, o arquivo tem uma linha só: vale o padrão
 _QUEBRA_PADRAO: Final = "\r\n"  # o padrão do módulo csv
@@ -36,25 +35,56 @@ class ResumoAnonimizacao:
     cabecalho_alterado: bool = False  # algum nome de coluna trazia dado pessoal (CSV sem cabeçalho)
 
 
+def _umask() -> int:
+    """A umask do processo. Só se lê trocando-a: a troca e a restauração são duas chamadas, então
+    outra thread que crie arquivos entre elas veria a umask 0. Aqui o programa é de uma thread."""
+    atual = os.umask(0)
+    os.umask(atual)
+    return atual
+
+
+def _publicar(temporario: Path, saida: Path, forcar: bool) -> None:
+    """Faz de `temporario` o arquivo `saida`, com as permissões da umask."""
+    os.chmod(temporario, 0o666 & ~_umask())
+    if forcar:
+        os.replace(temporario, saida)
+        return
+    try:
+        os.link(temporario, saida)  # falha com FileExistsError se o destino já existe
+    except FileExistsError:
+        raise ErroLeitura(_JA_EXISTE.format(saida)) from None
+    except OSError:
+        # Sistema de arquivos sem hardlink: sobra a janela entre a checagem e a troca.
+        os.replace(temporario, saida)
+        return
+    temporario.unlink()
+
+
 def _final_de_linha(caminho: Path, encoding: str) -> str:
     """O terminador da primeira quebra de linha do arquivo, para a cópia não trocar LF por CRLF.
 
-    Devolve `"\\r\\n"` ou `"\\n"` (e `"\\r"`, se for o que o arquivo usa); sem nenhuma quebra,
-    o padrão do módulo csv (`"\\r\\n"`).
+    Quebras dentro de campo entre aspas não valem: acompanha a paridade de `"`. Devolve
+    `"\\r\\n"` ou `"\\n"` (e `"\\r"`, se for o que o arquivo usa); sem nenhuma quebra, o padrão
+    do módulo csv (`"\\r\\n"`). Uma passagem linear, em blocos.
     """
-    lido = ""
+    lidos = 0
+    entre_aspas = False
+    cr_pendente = False  # "\r" visto: o próximo caractere diz se é "\r\n" ou "\r"
     with open(caminho, encoding=encoding, newline="") as f:
-        while len(lido) < _LIMITE_QUEBRA:
+        while lidos < _LIMITE_QUEBRA:
             bloco = f.read(_BLOCO_QUEBRA)
-            lido += bloco
-            achado = _QUEBRA.search(lido)
-            # Um "\r" no fim do que foi lido pode ser metade de um "\r\n": lê mais um bloco.
-            if achado is not None and (
-                achado.group() != "\r" or achado.end() < len(lido) or not bloco
-            ):
-                return achado.group()
             if not bloco:
-                return _QUEBRA_PADRAO
+                return "\r" if cr_pendente else _QUEBRA_PADRAO
+            for c in bloco:
+                if cr_pendente:
+                    return "\r\n" if c == "\n" else "\r"
+                if c == '"':
+                    entre_aspas = not entre_aspas
+                elif not entre_aspas:
+                    if c == "\n":
+                        return "\n"
+                    cr_pendente = c == "\r"
+            lidos += len(bloco)
     return _QUEBRA_PADRAO
 
 
@@ -112,10 +142,17 @@ def anonimizar(
     Duas passagens em streaming: `analisar` decide o que conta; depois cada linha é
     reescrita, no mesmo encoding (inclusive o BOM do `utf-8-sig`), delimitador e final de linha.
 
-    A gravação é atômica: o texto vai para um temporário exclusivo ao lado do destino e só
-    então troca o destino (`os.replace`); em qualquer erro o temporário some e o destino
-    anterior fica intacto. Limitação aceita: o arquivo novo nasce com as permissões do
-    temporário (só o dono, em sistemas POSIX), não com as do que foi substituído.
+    A gravação é atômica: o texto vai para um temporário exclusivo ao lado do destino, é
+    sincronizado no disco (`fsync`) e só então publicado; em qualquer erro o temporário some e
+    o destino anterior fica intacto. Com `forcar`, a publicação é `os.replace`. Sem `forcar`,
+    é `os.link`, que falha atomicamente se o destino passou a existir durante a execução (a
+    corrida vira erro, sem tocar no arquivo novo). Se o sistema de arquivos não tem hardlink,
+    cai para `os.replace`, e fica uma janela residual entre a última checagem e a troca.
+    O arquivo final tem as permissões da umask do processo (`0o666 & ~umask`), não as do
+    temporário (0600) nem as do arquivo que foi substituído.
+
+    Um BOM de UTF-16 big-endian é regravado como little-endian (o codec `utf-16` grava na
+    ordem nativa).
 
     Comportamento herdado do leitor, que entrega uma tabela retangular: linhas totalmente em
     branco somem, linhas curtas saem completadas com células vazias e colunas a mais ganham
@@ -133,8 +170,10 @@ def anonimizar(
         raise ErroLeitura("--output não pode ser o arquivo de entrada")
     if saida.is_dir():
         raise ErroLeitura(f"a saída é um diretório: {saida}")
+    if not saida.parent.is_dir():
+        raise ErroLeitura(f"a pasta da saída não existe: {saida.parent}")
     if saida.exists() and not forcar:
-        raise ErroLeitura(f"o arquivo de saída já existe: {saida}; use --force para sobrescrever")
+        raise ErroLeitura(_JA_EXISTE.format(saida))
 
     leitor = LeitorCsv(entrada, encoding=encoding, delimitador=delimitador)
     analise = analisar(leitor, entrada.name)
@@ -163,7 +202,9 @@ def anonimizar(
                     alteradas.update(tipos)
                     nova.append(mascarada)
                 escritor.writerow(nova)
-        os.replace(temporario, saida)
+            f.flush()
+            os.fsync(f.fileno())  # os dados no disco antes de o destino passar a apontar para eles
+        _publicar(temporario, saida, forcar)
     except BaseException:
         temporario.unlink(missing_ok=True)
         raise

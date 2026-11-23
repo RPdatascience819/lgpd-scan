@@ -566,4 +566,113 @@ def test_erro_ao_escrever_o_resumo_da_2(
     entrada = _dados(tmp_path)
     monkeypatch.setattr(sys, "stdout", _DiscoCheio())
     assert main(["anonymize", str(entrada), "--output", str(tmp_path / "s.csv")]) == 2
-    assert "não foi possível escrever a saída" in capsys.readouterr().err
+    erro = capsys.readouterr().err
+    assert "não foi possível escrever a saída" in erro
+    # A cópia já existe: a mensagem diz isso e onde, para ninguém repetir a operação.
+    assert "FOI gravada" in erro
+    assert str(tmp_path / "s.csv") in erro
+    assert (tmp_path / "s.csv").exists()
+
+
+def test_saida_criada_no_meio_da_execucao_sem_force_da_2_e_nao_e_tocada(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entrada = _dados(tmp_path)
+    saida = tmp_path / "s.csv"
+    chamadas: list[int] = []
+
+    def cria_a_saida(texto: str, nome: str) -> list[Achado]:
+        chamadas.append(1)
+        if len(chamadas) == 1:  # primeira célula da segunda passagem
+            saida.write_text("criado por outro", encoding="utf-8")
+        return classificar_celula(texto, nome)
+
+    monkeypatch.setattr("lgpd_scan.anonymize.classificar_celula", cria_a_saida)
+    assert main(["anonymize", str(entrada), "--output", str(saida)]) == 2
+    assert chamadas  # a corrida realmente aconteceu
+    assert "já existe" in capsys.readouterr().err
+    assert saida.read_text(encoding="utf-8") == "criado por outro"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["dados.csv", "s.csv"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="a umask não vale no Windows")
+@pytest.mark.parametrize("forcar", [False, True])
+def test_permissao_do_arquivo_final_segue_a_umask(tmp_path: Path, forcar: bool) -> None:
+    entrada = _dados(tmp_path)
+    saida = tmp_path / "s.csv"
+    argv = ["anonymize", str(entrada), "--output", str(saida)]
+    anterior = os.umask(0o022)
+    try:
+        assert main([*argv, "--force"] if forcar else argv) == 0
+    finally:
+        os.umask(anterior)
+    assert (saida.stat().st_mode & 0o777) == 0o644
+
+
+def test_pasta_de_destino_inexistente_da_2_antes_de_qualquer_passagem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def nao_deve_rodar(*_a: object, **_k: object) -> None:
+        raise AssertionError("analisar não pode rodar")
+
+    monkeypatch.setattr("lgpd_scan.anonymize.analisar", nao_deve_rodar)
+    entrada = _dados(tmp_path)
+    saida = tmp_path / "nao_existe" / "s.csv"
+    assert main(["anonymize", str(entrada), "--output", str(saida)]) == 2
+    assert "pasta da saída não existe" in capsys.readouterr().err
+    assert not saida.parent.exists()
+
+
+def test_final_de_linha_ignora_quebra_dentro_de_campo_entre_aspas(tmp_path: Path) -> None:
+    entrada = tmp_path / "e.csv"
+    entrada.write_bytes(b'"a\r\nb",c\nx,y\n')
+    saida = tmp_path / "s.csv"
+    assert main(["anonymize", str(entrada), "--output", str(saida)]) == 0
+    assert saida.read_bytes() == entrada.read_bytes()
+
+
+def test_arquivo_so_com_cr_continua_so_com_cr(tmp_path: Path) -> None:
+    entrada = tmp_path / "e.csv"
+    entrada.write_bytes(b"a,b\r1,2\r")
+    saida = tmp_path / "s.csv"
+    assert main(["anonymize", str(entrada), "--output", str(saida)]) == 0
+    assert saida.read_bytes() == entrada.read_bytes()
+
+
+def test_arquivo_sem_nenhuma_quebra_usa_o_padrao_do_csv(tmp_path: Path) -> None:
+    entrada = tmp_path / "e.csv"
+    entrada.write_bytes(b"a,b")
+    saida = tmp_path / "s.csv"
+    assert main(["anonymize", str(entrada), "--output", str(saida)]) == 0
+    assert saida.read_bytes() == b"a,b\r\n"
+
+
+def test_arquivo_grande_sem_quebra_nao_e_quadratico(tmp_path: Path) -> None:
+    entrada = tmp_path / "e.csv"
+    entrada.write_bytes(b"a" * 3_000_000)
+    saida = tmp_path / "s.csv"
+    assert main(["anonymize", str(entrada), "--output", str(saida)]) == 0
+    assert saida.read_bytes() == b"a" * 3_000_000 + b"\r\n"
+
+
+def test_arquivo_vazio_da_0_e_grava_zero_bytes(tmp_path: Path) -> None:
+    entrada = tmp_path / "e.csv"
+    entrada.write_bytes(b"")
+    saida = tmp_path / "s.csv"
+    assert main(["anonymize", str(entrada), "--output", str(saida)]) == 0
+    assert saida.read_bytes() == b""
+
+
+def test_o_arquivo_e_sincronizado_antes_de_publicar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sincronizados: list[int] = []
+    real = os.fsync
+
+    def registra(fd: int) -> None:
+        sincronizados.append(fd)
+        real(fd)
+
+    monkeypatch.setattr(os, "fsync", registra)
+    assert main(["anonymize", str(_dados(tmp_path)), "--output", str(tmp_path / "s.csv")]) == 0
+    assert len(sincronizados) == 1
