@@ -103,6 +103,39 @@ def test_csv_sem_cabecalho_nao_vaza_a_primeira_linha_como_nome_de_coluna(
     _sem_vazamento(captura.err, _formas_proibidas([cpf, email]))
 
 
+def test_anonymize_nao_traz_valor_original_no_stdout_no_stderr_nem_na_copia(
+    csv_sintetico: tuple[Path, set[str]], capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    arquivo, proibidas = csv_sintetico
+    copia = tmp_path / "anonimizado.csv"
+    assert main(["anonymize", str(arquivo), "--output", str(copia)]) == 0
+    captura = capsys.readouterr()
+    assert str(copia) in captura.out  # há resumo: o teste não passa por saída vazia
+    _sem_vazamento(captura.out, proibidas)
+    _sem_vazamento(captura.err, proibidas)
+    texto = copia.read_text(encoding="utf-8")
+    assert texto.startswith("cpf,cnpj,email,telefone\n")  # a cópia foi de fato gravada
+    _sem_vazamento(texto, proibidas)
+
+
+def test_anonymize_de_csv_sem_cabecalho_nao_vaza_a_primeira_linha(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rng = random.Random(79)
+    cpf, email = gerar_cpf(rng, formatado=True), gerar_email(rng)
+    linhas = [f"{gerar_cpf(rng, formatado=True)},{gerar_email(rng)}" for _ in range(3)]
+    arquivo = tmp_path / "sem_cabecalho.csv"
+    arquivo.write_text("\n".join([f"{cpf},{email}", *linhas]) + "\n", encoding="utf-8")
+    copia = tmp_path / "anonimizado.csv"
+    assert main(["anonymize", str(arquivo), "--output", str(copia)]) == 0
+    captura = capsys.readouterr()
+    assert "cabeçalho" in captura.err  # o aviso saiu, sem valor
+    proibidas = _formas_proibidas([cpf, email])
+    _sem_vazamento(captura.out, proibidas)
+    _sem_vazamento(captura.err, proibidas)
+    _sem_vazamento(copia.read_text(encoding="utf-8"), proibidas)
+
+
 def test_o_detector_de_vazamento_acusa_um_vazamento_real() -> None:
     with pytest.raises(AssertionError, match="apareceram"):
         _sem_vazamento("cpf 111.444.777-35 no texto", {"111.444.777-35"})

@@ -11,11 +11,13 @@ import errno
 import os
 import sys
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import NoReturn
 
 from lgpd_scan import __version__
+from lgpd_scan._arquivos import e_o_mesmo_arquivo
+from lgpd_scan.anonymize import ResumoAnonimizacao, anonimizar
 from lgpd_scan.readers import ErroLeitura, LeitorCsv
 from lgpd_scan.report import (
     criar_console,
@@ -70,23 +72,50 @@ def _criar_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--delimiter", metavar="CHAR", help="delimitador de campos (padrão: detectado)"
     )
+    anonymize = subcomandos.add_parser(
+        "anonymize",
+        help="grava uma cópia do arquivo com os dados pessoais mascarados",
+        description=(
+            "Grava uma cópia anonimizada do arquivo CSV: mascara só o trecho que é dado pessoal "
+            "e preserva o resto, o cabeçalho, o delimitador e a codificação. Nunca altera nem "
+            "sobrescreve o arquivo de entrada. Código de saída: 0 em sucesso, mesmo sem nada a "
+            "mascarar; 2 em erro de uso, de leitura ou de gravação."
+        ),
+    )
+    anonymize.add_argument("arquivo", metavar="ARQUIVO", type=Path, help="arquivo CSV de entrada")
+    anonymize.add_argument(
+        "--output",
+        metavar="SAIDA",
+        type=Path,
+        required=True,
+        help="arquivo da cópia anonimizada (obrigatório; não pode ser a entrada)",
+    )
+    anonymize.add_argument(
+        "--mode",
+        choices=("mask",),
+        default="mask",
+        help="modo de anonimização; só existe mask (padrão: mask)",
+    )
+    anonymize.add_argument(
+        "--force", action="store_true", help="sobrescreve o arquivo de saída se ele já existir"
+    )
+    anonymize.add_argument(
+        "--incluir-suspeitas",
+        action="store_true",
+        help="mascara também as suspeitas (o que o scan não conta pela regra da maioria)",
+    )
+    anonymize.add_argument(
+        "--encoding", metavar="ENC", help="codificação do arquivo (padrão: detectada)"
+    )
+    anonymize.add_argument(
+        "--delimiter", metavar="CHAR", help="delimitador de campos (padrão: detectado)"
+    )
     return parser
 
 
 def _erro(mensagem: str) -> int:
     print(f"lgpd-scan: erro: {mensagem}", file=sys.stderr)
     return SAIDA_ERRO
-
-
-def _e_o_mesmo_arquivo(a: Path, b: Path) -> bool:
-    """Se `a` e `b` são o mesmo arquivo, mesmo por grafias diferentes do caminho."""
-    if a.resolve() == b.resolve():
-        return True
-    try:
-        # `samefile` exige que os dois existam; cobre hardlinks e diferenças de maiúsculas.
-        return os.path.samefile(a, b)
-    except OSError:
-        return False
 
 
 def _gravar_atomico(texto: str, destino: Path) -> None:
@@ -117,13 +146,11 @@ def _e_pipe_fechado(erro: OSError) -> bool:
     return isinstance(erro, BrokenPipeError) or (_WINDOWS and erro.errno == errno.EINVAL)
 
 
-def _escrever_no_stdout(analise: Analise, formato: str) -> int | None:
-    """Escreve o relatório. Devolve `SAIDA_ERRO` se não deu para escrever, senão `None`."""
+def _escrever_protegido(escrever: Callable[[], None], complemento: str = "") -> int | None:
+    """Roda `escrever`, que imprime no stdout. Devolve `SAIDA_ERRO` se não deu para escrever
+    (um pipe fechado não conta como erro), senão `None`. `complemento` fecha a mensagem de erro."""
     try:
-        if formato == "json":
-            sys.stdout.write(renderizar_json(analise) + "\n")
-        else:
-            renderizar_tabela(analise, criar_console(sys.stdout))
+        escrever()
         sys.stdout.flush()
     except SystemExit:
         # O Rich trata o pipe quebrado sozinho: redireciona o fd 1 e encerra com SystemExit(1),
@@ -135,23 +162,40 @@ def _escrever_no_stdout(analise: Analise, formato: str) -> int | None:
         else:  # disco cheio, por exemplo
             return _erro(
                 f"não foi possível escrever a saída: {erro.strerror or type(erro).__name__}"
+                f"{complemento}"
             )
     return None
 
 
+def _escrever_no_stdout(analise: Analise, formato: str) -> int | None:
+    """Escreve o relatório. Devolve `SAIDA_ERRO` se não deu para escrever, senão `None`."""
+
+    def escrever() -> None:
+        if formato == "json":
+            sys.stdout.write(renderizar_json(analise) + "\n")
+        else:
+            renderizar_tabela(analise, criar_console(sys.stdout))
+
+    return _escrever_protegido(escrever)
+
+
+def _emitir_aviso_de_cabecalho() -> None:
+    print(
+        "lgpd-scan: aviso: a primeira linha parece conter dados pessoais; o CSV pode não "
+        "ter cabeçalho. CSV sem cabeçalho não é suportado nesta versão.",
+        file=sys.stderr,
+    )
+
+
 def _aviso_de_cabecalho(cabecalho: list[str]) -> None:
     if any(nome_de_coluna_seguro(nome) != nome for nome in cabecalho):
-        print(
-            "lgpd-scan: aviso: a primeira linha parece conter dados pessoais; o CSV pode não "
-            "ter cabeçalho. CSV sem cabeçalho não é suportado nesta versão.",
-            file=sys.stderr,
-        )
+        _emitir_aviso_de_cabecalho()
 
 
 def _verificar_caminhos(arquivo: Path, saida: Path | None) -> str | None:
     """A mensagem de erro de entrada e saída, ou `None` se estão em ordem."""
     try:
-        if saida is not None and _e_o_mesmo_arquivo(arquivo, saida):
+        if saida is not None and e_o_mesmo_arquivo(arquivo, saida):
             return "--output não pode ser o arquivo de entrada"
         if not arquivo.exists():
             return f"arquivo não encontrado: {arquivo}"
@@ -198,11 +242,54 @@ def _comando_scan(args: argparse.Namespace) -> int:
     return SAIDA_RISCO if analise.risco in (Risco.MEDIO, Risco.ALTO) else SAIDA_OK
 
 
+def _escrever_resumo(resumo: ResumoAnonimizacao, saida: Path) -> int | None:
+    """O resumo da anonimização no stdout: contagens por tipo e o caminho, nunca valores."""
+    total = sum(resumo.celulas_alteradas.values())
+
+    def escrever() -> None:
+        sys.stdout.write(f"Anonimização concluída: {total} célula(s) alterada(s).\n")
+        for tipo, quantas in sorted(resumo.celulas_alteradas.items()):
+            sys.stdout.write(f"  {tipo.value}: {quantas}\n")
+        sys.stdout.write(f"Arquivo gravado em {saida}\n")
+
+    # A cópia já está gravada: a mensagem avisa, para ninguém repetir a operação.
+    return _escrever_protegido(escrever, f" (a cópia anonimizada FOI gravada em {saida})")
+
+
+def _comando_anonymize(args: argparse.Namespace) -> int:
+    arquivo: Path = args.arquivo
+    saida: Path = args.output
+    problema = _verificar_caminhos(arquivo, saida)
+    if problema is not None:
+        return _erro(problema)
+    try:
+        resumo = anonimizar(
+            arquivo,
+            saida,
+            incluir_suspeitas=args.incluir_suspeitas,
+            forcar=args.force,
+            encoding=args.encoding,
+            delimitador=args.delimiter,
+        )
+    except ErroLeitura as erro:
+        return _erro(str(erro))
+    except OSError as erro:
+        return _erro(
+            f"não foi possível ler ou gravar os arquivos: {erro.strerror or type(erro).__name__}"
+        )
+    if resumo.cabecalho_alterado:
+        _emitir_aviso_de_cabecalho()
+    falha = _escrever_resumo(resumo, saida)
+    return SAIDA_OK if falha is None else falha
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Executa a CLI e devolve o código de saída."""
     args = _criar_parser().parse_args(argv)
     if args.comando == "scan":
         return _comando_scan(args)
+    if args.comando == "anonymize":
+        return _comando_anonymize(args)
     return SAIDA_ERRO  # inalcançável: o argparse exige um subcomando conhecido
 
 
